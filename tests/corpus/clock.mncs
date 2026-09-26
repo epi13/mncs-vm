@@ -1,0 +1,10 @@
+mncs 0.18;
+
+module mncs.vmcorpus.clock.v1;
+
+fn read_clock() -> (result: u64)
+    capability clock_capability
+    effect clock_read authorized_by clock_capability
+{
+    return clock_read();
+}

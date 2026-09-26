@@ -1,0 +1,11 @@
+mncs 0.18;
+
+module mncs.vmcorpus.neg.v1;
+
+fn div_or_fail(a: i64, b: i64) -> (result: i64) {
+    return a / b;
+}
+
+fn overflow_add(a: i64, b: i64) -> (result: i64) {
+    return a + b;
+}

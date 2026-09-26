@@ -1,0 +1,22 @@
+[package]
+name = "mncs-vm"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/epi13/mncs-vm"
+description = "Canonical machine-native virtual machine and execution runtime for MNCS"
+
+[dependencies]
+# READ-ONLY upstream consumption: path dependencies for use, never mutated.
+# mncs-language and mncs-compiler are locked for this campaign; the VM
+# consumes their public pipeline (compile) and oracle (execute_ssa) APIs.
+mncs-model = { path = "../mncs-language/crates/mncs-model" }
+mncs-compiler = { path = "../mncs-language/crates/mncs-compiler" }
+mncs-syntax = { path = "../mncs-language/crates/mncs-syntax" }
+mncs-codegen = { path = "../mncs-language/crates/mncs-codegen" }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+thiserror = "2"
+sha2 = "0.10"
+
+[dev-dependencies]

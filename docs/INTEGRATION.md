@@ -38,15 +38,23 @@ The VM must be executable independently from the compiler.
 
 The existing `mncs-research-bytecode` backend and bounded SSA interpreter are a precursor, not the permanent architectural boundary.
 
-During migration:
+Campaign 1 established the concrete migration shape:
 
-- use frozen corpora to compare expected observations;
-- preserve only intentional semantic behavior;
-- move runtime ownership here;
-- keep compiler legality and translation evidence upstream;
-- remove obsolete duplicate interpreter/session behavior when consumers have migrated.
+- `src/migrate.rs` (temporary, removal P-VM-COMPILER-001) translates research payloads into `mncs.vm.artifact/1` at the boundary, verifying upstream identity and refusing what it cannot translate;
+- the research interpreter is a read-only differential oracle (`mncs_model::execute_ssa` over the same compilation), never modified, never linked as an execution path;
+- `tests/differential.rs` pins value and status agreement over the corpus;
+- compiler legality, translation evidence, integer meaning, and type shapes stay upstream; frames, metering, capabilities, outcomes, and evidence are VM-owned.
 
-Do not maintain both paths indefinitely as artificial compatibility generations.
+Do not maintain both paths indefinitely as artificial compatibility generations. The desired end state is not two MNCS bytecode runtimes: once the compiler emits the canonical artifact directly, the adapter deletes and the research interpreter remains only as upstream's own tooling, not as a competing runtime.
+
+## Per-system status (campaign 1)
+
+- `mncs-test`: VM conformance lives here (`tests/`); family matrices are not run per edit — `cargo test` in this repo is the fast loop.
+- `mncs-debug`: can consume `ExecutionRecord` JSON and structured outcomes today; no stepping/replay API exists yet.
+- `mncs-fabric`: can bind artifact id + envelope + capability names around `Session::call`, but no Fabric driver exists yet.
+- `mncs-store`: no persistence contract yet; `VmArtifact` JSON and `ExecutionRecord` JSON are the shapes to persist when defined.
+- `mncs-actions`: providers implement the foreign `Provider` trait; no domain logic in the VM.
+- `mncs-memory` / `mncs-automation`: untouched by design (semantic memory and wall-clock scheduling are not VM concerns).
 
 ## `MNCS-Commons`
 

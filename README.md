@@ -6,7 +6,28 @@ Canonical machine-native virtual machine and execution runtime for MNCS bytecode
 
 `mncs-vm` is the execution layer between compiler-produced MNCS VM artifacts and the wider MNCS runtime environment. It is intended to provide a deterministic core execution model, explicit nondeterminism/effect boundaries, capability enforcement, bounded resource accounting, runtime memory semantics, call/task scheduling, structured failure, and identity-preserving observations that other MNCS systems can inspect and verify.
 
-This repository begins documentation-first. There is intentionally no assumption that the current experimental research-bytecode interpreter inside `mncs-language` should simply be copied here. That implementation is an important pressure source and migration input, but the VM should be designed from the current language/runtime contracts and then become the canonical MNCS-native execution target as those contracts mature.
+This repository began documentation-first; campaign 1 built the first executable foundation (see "Implemented state" below). The research-bytecode interpreter inside `mncs-language` was not copied: it serves as a read-only differential oracle while the VM executes through its own engine under VM-owned runtime rules.
+
+## Implemented state (campaign 1)
+
+One Rust crate (`cargo test` is the fast loop, ~30 tests):
+
+- `mncs.vm.artifact/1` canonical artifact with content identity, identity-bound callables, declared bounds/capabilities, and an SSA code section;
+- loader/admission with typed refusals (malformed, unsupported, unresolved, incompatible, identity-mismatch);
+- reference engine over the admitted SSA subset (integers via upstream evaluation, calls, branches, records, finite values, sequences, bounded iteration, effects, provider-dispatched host calls);
+- enforced resource envelopes (steps, call depth, memory cells, effects, iterations);
+- capability allow/deny with fail-closed dispatch and provider boundary;
+- structured outcomes plus `ExecutionRecord` evidence with digests;
+- differential agreement with the unmodified research interpreter over `tests/corpus/`;
+- six upstream pressure records in `pressures/` (the compiler/language agent's intake).
+
+```bash
+cargo test --offline        # full suite: admission, execution, differential, resources, capabilities
+python3 scripts/run_tests.py  # same suite plus evidence validation
+cargo run --offline --example dump -- <corpus.mncs>  # inspect admitted SSA
+```
+
+Read-only upstream constraint honored: `mncs-language` and `mncs-compiler` were inspected, never modified. Everything the VM could not do without an upstream change is a pressure record, not a workaround.
 
 ## What this repository owns
 
