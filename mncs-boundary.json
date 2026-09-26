@@ -1,0 +1,93 @@
+{
+  "format": "mncs.vm-boundary",
+  "repository": "mncs-vm",
+  "thesis": "MNCS-native execution should preserve runtime-relevant language meaning, authority, bounds, identity, and evidence instead of collapsing them into an opaque host process.",
+  "owns": [
+    "MNCS virtual-machine execution semantics",
+    "runtime-specific VM artifact and instruction contract",
+    "artifact loading and runtime structural validation",
+    "runtime admission",
+    "runtime value and call execution",
+    "runtime-local frames stacks regions heaps handles and transient state",
+    "runtime capability checks and effect mediation",
+    "runtime resource metering and bounded execution",
+    "execution-local scheduling required by VM semantics",
+    "structured traps failures refusals suspensions and completion",
+    "runtime execution identities traces transition digests and observations",
+    "reference VM execution engine",
+    "runtime debug replay inspection and snapshot hooks"
+  ],
+  "does_not_own": [
+    "source-language semantics",
+    "compiler legality",
+    "HIR SSA or compiler optimization policy",
+    "translation proof or compiler evidence authority",
+    "all MNCS backend execution paths",
+    "semantic memory and retrieval",
+    "durable artifact storage",
+    "distributed placement or worker scheduling",
+    "wall-clock workflow automation",
+    "concrete external provider business logic",
+    "model architecture",
+    "learning policy",
+    "test orchestration",
+    "debug diagnosis policy",
+    "forge orchestration",
+    "rights or provenance policy",
+    "general cryptographic subsystem ownership"
+  ],
+  "core_invariants": [
+    "the VM executes frozen artifacts and does not redefine source-language meaning",
+    "the native VM is one backend target and does not invalidate direct WASM native accelerator or other backends",
+    "artifact callable runtime capability provider and resource identities remain explicit where required",
+    "the deterministic runtime core is reproducible under equal admitted inputs and configuration",
+    "external nondeterminism crosses explicit identifiable boundaries",
+    "capabilities are checked where authority is exercised",
+    "runtime bounds are enforced rather than retained only as metadata",
+    "structured runtime outcomes are not collapsed into generic process exits",
+    "runtime-local memory is distinct from semantic memory and durable storage",
+    "execution-local scheduling is distinct from workflow automation and distributed placement",
+    "runtime observations are structured machine data rather than log-only APIs",
+    "runtime observations are scoped evidence and are not automatically universal proof",
+    "host implementation details must not leak into defined VM semantics accidentally",
+    "capability enforcement is not by itself a claim of complete hostile-code sandboxing",
+    "the current research-bytecode interpreter is migration input rather than a permanent parallel runtime",
+    "the repository maintains one evolving canonical implementation unless a real external compatibility requirement exists"
+  ],
+  "family_interfaces": {
+    "mncs-language": "source semantics compiler legality selected SSA lowering translation evidence and emission of identity-bound MNCS VM artifacts",
+    "MNCS-Commons": "cross-repository pressure exchange shared contracts identities and evidence coordination",
+    "mncs-fabric": "host device worker placement runtime packaging and run-environment orchestration",
+    "mncs-actions": "external action/provider contracts invoked only through explicit admitted capability boundaries",
+    "mncs-automation": "wall-clock and event-driven workflow scheduling outside execution-local VM scheduling",
+    "mncs-memory": "semantic memory retrieval and memory behavior exposed through explicit runtime interfaces",
+    "mncs-store": "durable persistence of VM artifacts runtime packages snapshots traces results and evidence",
+    "mncs-test": "structured invocation conformance comparison and bounded execution verification",
+    "mncs-debug": "diagnosis stepping inspection replay and debugging policy over structured VM runtime state",
+    "mncs-doctor": "runtime environment capability compatibility and health diagnosis",
+    "mncs-forge": "build experiment orchestration backend comparison and evidence campaigns using the VM as an execution target",
+    "mncs-models": "model structure that may be compiled for or dispatched through VM execution",
+    "mncs-learn": "learning and adaptation semantics that may use VM execution without transferring learning policy into the runtime",
+    "mncs-rights-provenance": "rights provenance lineage and identity policy associated with artifacts inputs providers and outputs",
+    "mncs-crypto": "cryptographic primitives hashing signatures and authenticated structures consumed through explicit contracts",
+    "mncs-data": "machine-native data contracts presented through VM runtime ABI and provider boundaries"
+  },
+  "migration_policy": {
+    "current_source": "mncs-language research-bytecode backend and bounded SSA interpreter",
+    "rule": "Classify existing behavior into compiler semantics VM semantics integration contracts and disposable experiment scaffolding before moving code.",
+    "target": "One canonical MNCS-native VM runtime, with obsolete duplicate language-owned runtime machinery removed after migration and verification."
+  },
+  "determinism_policy": {
+    "core": "Defined VM semantics should be deterministic where language/runtime meaning allows it.",
+    "external": "Clocks randomness network devices users models remote providers and other external observations must cross explicit identifiable boundaries.",
+    "host_leakage": "Allocator addresses hash iteration order host thread timing and similar incidental behavior must not affect defined VM semantics unless explicitly specified."
+  },
+  "evolution_policy": "Maintain one canonical implementation and migrate known MNCS consumers forward. Do not create frozen v1/v2/legacy/next runtime trees without a real external compatibility obligation.",
+  "entry_documents": [
+    "AGENTS.md",
+    "rfcs/0001-machine-native-virtual-machine.md",
+    "docs/ARCHITECTURE.md",
+    "docs/INTEGRATION.md",
+    "ROADMAP.md"
+  ]
+}
