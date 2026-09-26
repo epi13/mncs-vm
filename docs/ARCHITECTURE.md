@@ -1,6 +1,11 @@
 # MNCS VM Architecture
 
-This document defines the initial architectural shape of `mncs-vm`. It is intentionally provisional. Concrete instruction forms, value layouts, memory structures, and scheduling mechanics must be driven by current `mncs-language` artifacts and real execution pressure.
+This document defines the architectural shape of `mncs-vm`. The
+provisional sections below record design intent; the
+"Implemented state" section records what campaign 1 actually built,
+driven by current `mncs-language` artifacts and real execution
+pressure. Where the two disagree, the implemented state wins and
+the intent section is updated.
 
 The architecture is constrained by one rule above all others:
 
@@ -395,3 +400,79 @@ The first implementation campaign should resolve, through real code pressure:
 - which existing `Session` APIs should move here versus remain as higher-level wrappers.
 
 These should be answered by maintaining a small explicit contract and applying pressure from real MNCS workloads.
+
+## Implemented state (campaign 1)
+
+The first executable foundation exists as one Rust crate with no
+parallel implementations. Module map:
+
+```text
+src/artifact.rs    canonical mncs.vm.artifact/1 contract (externally
+                   tagged code section; content identity by sha256)
+src/admit.rs       loader/admission with typed refusals (Malformed,
+                   UnsupportedFeature, UnresolvedFact,
+                   IncompatibleContract, IdentityMismatch)
+src/migrate.rs     TEMPORARY adapter: research-bytecode payload in,
+                   canonical artifact out (removal: P-VM-COMPILER-001)
+src/value.rs       VM-owned values (int/bool/byte/float-bits/finite/
+                   record/sequence/vector/mask) with wire marshalling
+src/engine.rs      reference interpreter: explicit frame stack,
+                   identity-bound calls, SSA executable subset,
+                   region iteration bounds, capability dispatch,
+                   per-instruction step accounting
+src/resource.rs    envelopes (steps, call_depth, memory_cells,
+                   effects, iterations) with fail-closed charging
+src/capability.rs  admitted authority + provider boundary
+                   (ConstProvider/FailingProvider fixtures)
+src/outcome.rs     Completed, ProgramFailure, Trap, CapabilityDenied,
+                   Unsupported, InvalidRequest, BudgetExhausted,
+                   ProviderFailure, HostFailure
+src/evidence.rs    ExecutionRecord with identities, usage, effect
+                   observations, return/effects digests
+src/session.rs     Session::open/call binding artifact, callable,
+                   args, capabilities, envelope explicitly
+src/harness.rs     dev/test compile helper driving the read-only
+                   upstream pipeline in-process
+```
+
+Resolved from the open questions above:
+
+- The artifact stays close to selected SSA (code-only section on
+  the roadmap; the payload program is parsed for routing and then
+  dropped — P-VM-LANG-002).
+- Type information survives as the SSA value/operand types; the
+  engine checks arity plus coarse kind/identity at call and branch
+  boundaries.
+- Memory is frames plus reference-counted immutable values with
+  cell accounting; no collector, no linear memory, no handles yet.
+- Capabilities bind per call through an explicit environment;
+  providers are foreign traits, never VM logic.
+- No execution-local concurrency exists: current programs need
+  none, so no scheduler was built (deferred by evidence, not by
+  omission).
+- Accounting is exactly one step per executed instruction plus
+  one per taken terminator edge; iteration bounds come from SSA
+  region metadata.
+- Trace granularity is effect observations plus digests; no
+  instruction trace (kept out for cost, revisit with Debug).
+- Debug/replay snapshots do not exist yet; determinism makes
+  re-execution the replay story for pure runs.
+- Cross-artifact calls and dynamic loading do not exist.
+- The upstream `Session` API stays upstream; the VM exposes its
+  own smaller session over admitted artifacts.
+- Integer meaning is never redefined: the engine evaluates
+  through public `IntegerOperation::evaluate` and mirrors oracle
+  outcome mapping, pinned by differential tests.
+
+Executable subset and explicit UNSUPPORTED list: Constant,
+Integer, IntegerCompare, BooleanOp, BooleanCompare, BooleanNot,
+ByteBitwise, ByteShift, ByteCompare, scalar Select,
+RecordConstruct, RecordProject, FiniteConstruct,
+FinitePayloadProject, FiniteIsVariant, SequenceConstruct,
+SequenceProject, SequenceLength, SequenceReplace, BoundCheck,
+integer/boolean/byte Convert, Call, Effect (recorded),
+HostCall (provider-dispatched), Return, Branch,
+ConditionalBranch, Failure. Everything else — floats ops,
+vectors, masks ops, views, SequenceCopy, RuntimeCheck (also
+Unsupported upstream) — is explicit `Unsupported`, never
+approximated.

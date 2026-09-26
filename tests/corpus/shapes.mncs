@@ -1,0 +1,39 @@
+mncs 0.18;
+
+module mncs.vmcorpus.shapes.v1;
+
+record Pair { x: i64, y: i64 }
+
+enum Maybe { Nothing, Just { v: i64 } }
+
+fn mkpair(a: i64, b: i64) -> (result: Pair) {
+    return Pair { x: a, y: b };
+}
+
+fn sum_pair(a: i64, b: i64) -> (result: i64) {
+    let p: Pair = Pair { x: a, y: b };
+    return p.x + p.y;
+}
+
+fn just_or_default(tag: i64, v: i64, d: i64) -> (result: i64) {
+    let m: Maybe = wrap(tag, v);
+    return match m {
+        Maybe.Nothing => d,
+        Maybe.Just { v } => v + d,
+    };
+}
+
+fn wrap(tag: i64, v: i64) -> (result: Maybe) {
+    if tag == 0 {
+        return Maybe.Nothing;
+    }
+    return Maybe.Just { v: v };
+}
+
+fn is_just_of(tag: i64, v: i64) -> (result: bool) {
+    let m: Maybe = wrap(tag, v);
+    return match m {
+        Maybe.Nothing => false,
+        Maybe.Just { v } => true,
+    };
+}

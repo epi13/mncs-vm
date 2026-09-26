@@ -21,6 +21,8 @@ Tasks:
 
 Exit condition: the first VM implementation can be derived from current contracts rather than from assumptions in this scaffold.
 
+Status: COMPLETE (campaign 1). Survey covered the research backend, `BackendArtifact`, execution corpus, callable identity, session/call APIs, effects/capabilities, bounded iteration, evidence, Commons pressure exchange, and Fabric/Actions/Test/Debug/Store/Memory boundaries. Pressures live in `pressures/`.
+
 ## Phase 1 — Canonical VM artifact and loader
 
 Define the smallest executable artifact that can stand independently of compiler internals.
@@ -47,6 +49,8 @@ Build:
 
 Exit condition: a frozen VM artifact can be loaded and either admitted or refused without invoking compiler internals.
 
+Status: COMPLETE (campaign 1) as `mncs.vm.artifact/1` (`src/artifact.rs`, `src/admit.rs`) with content identity, callable resolution, bound-dimension checks, region consistency checks, and typed refusals. One honest deviation: the code section still carries compiler-selected SSA (P-VM-COMPILER-001 tracks direct emission), and frozen interchange of wide integers is range-limited with fail-closed refusal (P-VM-COMPILER-002, P-VM-ARTIFACT-007).
+
 ## Phase 2 — Reference execution core
 
 Implement a small, boring, inspectable reference engine before optimizing it.
@@ -65,6 +69,8 @@ Establish:
 Use the existing research-bytecode interpreter as a differential pressure source where useful, but do not preserve accidental implementation details.
 
 Exit condition: the compiler can emit at least one VM artifact and the standalone VM can execute a bounded corpus with identity-bound results.
+
+Status: COMPLETE (campaign 1). The engine (`src/engine.rs`) executes the admitted SSA subset over `tests/corpus/` with identity-bound calls; `tests/differential.rs` pins value and status agreement with the unmodified research interpreter. Known boundary: general recursion is rejected upstream (MNE130), so depth comes from bounded iteration, not unbounded calls.
 
 ## Phase 3 — Runtime memory semantics
 
@@ -85,6 +91,8 @@ Do not confuse runtime memory with `mncs-memory` semantic memory or `mncs-store`
 
 Exit condition: representative bounded data/collection workloads execute without relying on hidden compiler-owned interpreter state.
 
+Status: COMPLETE for current workloads (campaign 1). Frames, immutable reference-counted values, and cell accounting cover records, finite values, and bounded sequences with no collector and no hidden interpreter state. Handles, linear memory, snapshots, and explicit regions remain future scope pending real demand.
+
 ## Phase 4 — Capabilities and effect mediation
 
 Make runtime authority real.
@@ -99,6 +107,8 @@ Build a host/provider interface in which:
 - externally observed values/events can be represented without laundering nondeterminism into the deterministic VM core.
 
 Exit condition: effectful test workloads can prove allow/deny behavior at the runtime boundary.
+
+Status: COMPLETE (campaign 1). `src/capability.rs` plus `tests/capabilities.rs` prove allow/deny/failure-split over a real `clock_read` HostCall with stub providers. No sandbox claim is made (see boundary invariants).
 
 ## Phase 5 — Resource envelopes and bounded execution
 
@@ -117,6 +127,8 @@ Potential resource dimensions include:
 Accounting must state exactly what is measured. Do not present a VM step counter as universal CPU cost.
 
 Exit condition: budget exhaustion is deterministic, structured, testable, and visible to callers.
+
+Status: COMPLETE (campaign 1). Steps, call depth, memory cells, effects, and iterations exhaust as structured `BudgetExhausted` outcomes (`tests/resources.rs`). Accounting is stated exactly in `docs/ARCHITECTURE.md`.
 
 ## Phase 6 — Execution-local scheduling
 

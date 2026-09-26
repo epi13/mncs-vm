@@ -1,0 +1,40 @@
+mncs 0.18;
+
+module mncs.vmcorpus.arith.v1;
+
+fn add2(a: i64, b: i64) -> (result: i64) {
+    return a + b;
+}
+
+fn muladd(a: i64, b: i64, c: i64) -> (result: i64) {
+    return a * b + c;
+}
+
+fn absval(x: i64) -> (result: i64) {
+    if x < 0 {
+        return 0 - x;
+    }
+    return x;
+}
+
+fn max2(a: i64, b: i64) -> (result: i64) {
+    if a > b {
+        return a;
+    }
+    return b;
+}
+
+fn add1(x: i64) -> (result: i64) {
+    return x + 1;
+}
+
+fn add3(x: i64) -> (result: i64) {
+    return add1(add1(add1(x)));
+}
+
+fn sum8(xs: [i64; 8]) -> (result: i64) {
+    iterate i over xs carrying acc: i64 = 0 {
+        next acc = acc + xs[i];
+    }
+    return acc;
+}
