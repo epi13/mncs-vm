@@ -210,7 +210,7 @@ docs/INTEGRATION.md
     contracts and migration boundaries with the wider MNCS family
 ```
 
-There is intentionally no implementation scaffold yet. The first implementation work should begin by surveying the current executable artifact/runtime paths in `mncs-language`, the current callable/session interfaces, relevant Commons pressures, and the execution contracts expected by Fabric, Actions, Test, Debug, Forge, and other consumers.
+Implementation status: the artifact contract, admission, reference engine, capabilities, resources, sessions, evidence, and the live-debug contract (`mncs.vm.debug/1` with the `mncs-vm run` / `mncs-vm debug` binary) are implemented in `src/` with conformance suites in `tests/`. `python3 scripts/run_tests.py` is the fast verification loop. New work should extend the implemented contracts and their tests rather than re-surveying from scratch; pressures live in `pressures/`.
 
 ## Definition of a healthy foundation
 

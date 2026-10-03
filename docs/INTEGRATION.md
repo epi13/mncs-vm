@@ -50,7 +50,7 @@ Do not maintain both paths indefinitely as artificial compatibility generations.
 ## Per-system status (campaign 1)
 
 - `mncs-test`: VM conformance lives here (`tests/`); family matrices are not run per edit — `cargo test` in this repo is the fast loop.
-- `mncs-debug`: can consume `ExecutionRecord` JSON and structured outcomes today; no stepping/replay API exists yet.
+- `mncs-debug`: consumes `ExecutionRecord` JSON, structured outcomes, and the live-debug contract (`Session::start_debug`, `mncs.vm.debug/1`): identity-bound stops, typed inspection, resume/step/terminate, and shared-shape observation streams. The `mncs-vm debug` JSONL driver (stdio or socket) is the process boundary.
 - `mncs-fabric`: can bind artifact id + envelope + capability names around `Session::call`, but no Fabric driver exists yet.
 - `mncs-store`: no persistence contract yet; `VmArtifact` JSON and `ExecutionRecord` JSON are the shapes to persist when defined.
 - `mncs-actions`: providers implement the foreign `Provider` trait; no domain logic in the VM.
@@ -164,17 +164,18 @@ Test should not need to scrape runtime logs to determine semantic outcomes.
 
 Debug consumes runtime introspection.
 
-Potential VM surfaces include:
+Shipped VM surfaces (`mncs.vm.debug/1`, `src/debug.rs`):
 
-- execution/call identities;
-- current frame/control position;
-- structured stack/frame state;
-- bounded trace/transition history;
-- resource counters;
-- capability/provider transitions;
-- traps/failures;
-- step/resume/suspend interfaces;
-- snapshots and replay boundaries.
+- execution/call identities (`mncs:vm:execution:<digest>`);
+- current frame/control position (safe points with stated invariants);
+- structured stack/frame state (bounded typed views, read-only);
+- bounded trace/transition history (shared observation stream);
+- resource counters (per stop and terminal);
+- capability/provider transitions (effect log + invoke/result events);
+- traps/failures (terminal safe points; inspectable, not resumable);
+- step/resume/terminate interfaces with single-owner tokens;
+- transition digests and deterministic value identities for replay
+  comparison (forward re-execution; no reverse execution).
 
 Debug policy and diagnosis belong to `mncs-debug`. The VM exposes factual runtime state/events.
 

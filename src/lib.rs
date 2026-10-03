@@ -17,6 +17,7 @@
 pub mod admit;
 pub mod artifact;
 pub mod capability;
+pub mod debug;
 pub mod engine;
 pub mod evidence;
 pub mod harness;
