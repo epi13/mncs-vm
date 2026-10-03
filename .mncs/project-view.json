@@ -1,0 +1,23 @@
+{
+  "capabilities": [
+    {
+      "contract": "vm-artifact",
+      "fingerprint_sources": [
+        "src/"
+      ],
+      "kind": "execution-runtime",
+      "stability": "experimental",
+      "version": "0.1.0"
+    }
+  ],
+  "dependencies": [],
+  "entry": [
+    "cargo test --offline",
+    "python3 scripts/run_tests.py"
+  ],
+  "purpose": "Canonical machine-native virtual machine and execution runtime for MNCS bytecode: deterministic core execution preserving explicit contracts, effects, capabilities, bounds, identity, and evidence.",
+  "repository": "mncs-vm",
+  "schema_version": "mncs.project-view/1",
+  "source_identity": "sha256:34c9f402358fe8b0e3451e83cab646c707503d6adc2d4fc8249c75c2eaac07b8",
+  "structure": {}
+}

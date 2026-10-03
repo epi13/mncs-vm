@@ -1,6 +1,23 @@
 # mncs-vm
 
 <!-- MNCS:generated:begin -->
+## Project entry
+
+Canonical machine-native virtual machine and execution runtime for MNCS bytecode: deterministic core execution preserving explicit contracts, effects, capabilities, bounds, identity, and evidence.
+
+```bash
+cargo test --offline
+```
+
+```bash
+python3 scripts/run_tests.py
+```
+
+Declared capabilities (declarations do not establish execution health):
+
+- `vm-artifact/0.1.0` — execution-runtime (experimental)
+
+Semantic sources and ownership: `.mncs/projections.json`.
 <!-- MNCS:generated:end -->
 
 Canonical machine-native virtual machine and execution runtime for MNCS bytecode.
