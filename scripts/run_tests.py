@@ -30,7 +30,7 @@ def main():
     if proc.returncode != 0:
         print("cargo test FAILED")
         return 1
-    print("mncs-vm suites PASS (admission, execution, differential, resources, capabilities, smoke)")
+    print("mncs-vm suites PASS (admission, execution, differential, resources, capabilities, debug, cli, smoke)")
     return 0
 
 

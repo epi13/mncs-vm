@@ -33,6 +33,9 @@ pub enum Outcome {
     ProviderFailure { provider: String, detail: String },
     /// The host runtime failed (allocation, IO on evidence write, etc.).
     HostFailure { detail: String },
+    /// A debugger terminated the execution at an explicit stop.
+    /// Never produced by unobserved runs.
+    Terminated { detail: String },
 }
 
 impl Outcome {
@@ -48,6 +51,7 @@ impl Outcome {
             Outcome::BudgetExhausted { .. } => "budget_exhausted",
             Outcome::ProviderFailure { .. } => "provider_failure",
             Outcome::HostFailure { .. } => "host_failure",
+            Outcome::Terminated { .. } => "terminated",
         }
     }
 

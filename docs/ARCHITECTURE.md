@@ -292,21 +292,78 @@ The exact categories must follow actual language/runtime contracts.
 
 ### 13. Observation and evidence
 
-The VM should expose machine-readable observations suitable for Test, Debug, Forge, Doctor, Fabric, and evidence workflows.
+The VM exposes machine-readable observations suitable for Test, Debug, Forge, Doctor, Fabric, and evidence workflows.
 
-Useful observations may include:
+Live observations reuse the shared language-owned stream shape
+(`mncs.execution-observation/1`): event kinds, value captures,
+frames, effects, policy bounds, and completeness mean exactly what
+they mean for completed reference-runtime runs. The VM emits
+`execution_enter/exit`, `frame_enter/exit`, `block_enter`,
+`operation_enter/result` (paired exactly, including calls),
+`return`, `failure`, and `effect_invoke/result`. Values are captured
+only for retained operation events, so selected capture retains its
+own value closure rather than the ambient value universe.
 
-- exact runtime/artifact/call identities;
-- deterministic transition digests;
-- bounded trace records;
+Useful observations include:
+
+- exact runtime/artifact/call/execution identities
+  (`mncs:vm:execution:<digest>` is content-derived over artifact,
+  callable, arguments, capabilities, and envelope);
+- deterministic transition digests (per stop: execution, steps,
+  effects, safe point, state);
+- bounded trace records under the shared policy vocabulary;
 - resource counters;
 - capability checks;
 - provider transitions;
 - trap/failure records;
-- nondeterministic inputs/observations;
+- nondeterministic inputs/observations (recorded per effect with a
+  replayability class);
 - final value digest or materialized value according to policy.
 
 Observation is not automatically proof. The consuming system must preserve the scope of any claim made from runtime evidence.
+
+### 13a. Live debugging (safe points, stops, resume)
+
+`src/debug.rs` owns the live-debug contract (`mncs.vm.debug/1`).
+Run state is plain data and the drive loop is re-entrant, so the VM
+suspends truthfully: a stop holds the same frames, values, usage,
+and effect log that resume continues from. Nothing re-executes to
+fake a stop.
+
+Safe points (`operation`, `effect_before`, `effect_after`,
+`terminal`) guarantee: the frame value map is consistent, the stack
+above is untouched, usage is charged exactly for completed
+transitions, and the pending transition has not executed. Stopping
+before an effect never repeats or skips it; suspending after an
+effect advances past the instruction first, so resume cannot
+dispatch twice.
+
+Stop conditions name authoritative identities only (SSA
+instruction, function/semantic identity, effect boundary,
+failure/trap class) — never filename/line heuristics. Each stop
+carries a single-owner continuation token bound to the execution
+and stop sequence; stale and foreign tokens fail closed. Terminal
+stops are inspectable but not resumable; terminate finalizes them.
+Every stop record also carries `pending_terminal`: `None` on
+ordinary stops, the abnormal outcome (failure/trap/denial detail)
+on terminal stops, so a consumer never has to guess which failure
+suspended the run.
+
+Stepping is defined over observable semantic transitions: `step`
+stops at the next operation (into calls), `step over` at the next
+operation at or above the entry depth, `step out` below it.
+Resuming from a stop never re-fires stops at the same arrival.
+
+Value instances carry runtime-local identities
+(`mncs:vm:value:<digest>` over execution, frame, binding, version),
+stable while unchanged and deterministic across replay of
+identical admitted inputs. Semantic origin travels alongside via
+the SSA producer map; the two are never conflated.
+
+Explicitly unsupported: live watch stops, branch-condition stops,
+async effect suspension (dispatch is synchronous), expression
+evaluation, time travel, and multi-execution control. See
+`unsupported_debug_capabilities()`.
 
 ## Determinism model
 
@@ -453,10 +510,14 @@ Resolved from the open questions above:
 - Accounting is exactly one step per executed instruction plus
   one per taken terminator edge; iteration bounds come from SSA
   region metadata.
-- Trace granularity is effect observations plus digests; no
-  instruction trace (kept out for cost, revisit with Debug).
-- Debug/replay snapshots do not exist yet; determinism makes
-  re-execution the replay story for pure runs.
+- Trace granularity is the shared observation stream (operation,
+  block, frame, effect, failure events plus bounded values) under
+  an explicit capture policy; unobserved runs emit nothing.
+- Live debugging exists: safe points, identity-bound stops, typed
+  inspection, resume/step/terminate, transition digests, and
+  deterministic value identities (`src/debug.rs`, `mncs.vm.debug/1`).
+  Replay is forward re-execution with recorded observations;
+  reverse execution does not exist.
 - Cross-artifact calls and dynamic loading do not exist.
 - The upstream `Session` API stays upstream; the VM exposes its
   own smaller session over admitted artifacts.

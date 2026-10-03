@@ -167,6 +167,17 @@ Integrate with `mncs-test` and `mncs-debug` through structured contracts rather 
 
 Exit condition: test/debug tooling can inspect a VM execution without custom knowledge of the interpreter implementation.
 
+Status: SUBSTANTIALLY COMPLETE (campaign 2). `mncs.vm.debug/1`
+(`src/debug.rs`) ships observation hooks in the shared stream shape,
+safe points with stated invariants, identity-bound stop conditions,
+typed stop records with continuation tokens, bounded read-only
+inspection, resume/step/terminate, deterministic value identities,
+transition digests, and the `mncs-vm` binary (`run` one-shot plus
+the `debug` JSONL driver over stdio/socket). `mncs-debug` drives
+live sessions through it. Remaining: live watch stops,
+branch-condition stops, and compiler-owned SSA→source correspondence
+for VM operations (pressure with the compiler owner).
+
 ## Phase 8 — Fabric/runtime packaging
 
 Make the VM deployable as a clean execution component.

@@ -32,6 +32,7 @@ use mncs_model::{
 
 use crate::admit::Admitted;
 use crate::capability::{CapabilityEnv, EffectRequest};
+use crate::debug::{DebugDriver, DriveExit, StopReason, SuspendRequest};
 use crate::evidence::EffectObservation;
 use crate::outcome::Outcome;
 use crate::resource::{ResourceEnvelope, ResourceUsage};
@@ -54,27 +55,58 @@ pub struct EngineResult {
 }
 
 /// One live frame.
-struct Frame {
-    function: usize,
-    values: BTreeMap<String, Value>,
-    block: String,
-    iters: BTreeMap<String, u64>,
-    ip: usize,
+pub(crate) struct Frame {
+    pub function: usize,
+    pub values: BTreeMap<String, Value>,
+    pub block: String,
+    pub iters: BTreeMap<String, u64>,
+    pub ip: usize,
+    /// Frame sequence within the execution (entry frame is 0).
+    /// Stable for the frame's lifetime; used for value identity.
+    pub seq: u64,
 }
 
 /// A pushed caller awaiting a callee return.
-struct Caller {
-    frame: Frame,
-    output: Option<String>,
+pub(crate) struct Caller {
+    pub frame: Frame,
+    pub output: Option<String>,
 }
 
 /// Mutable per-run state, split from [`Engine`] so SSA borrows and
 /// state borrows never conflict.
-struct State {
-    usage: ResourceUsage,
-    effects: Vec<EffectObservation>,
-    effect_sequence: u64,
-    completed: Vec<Value>,
+pub(crate) struct State {
+    pub usage: ResourceUsage,
+    pub effects: Vec<EffectObservation>,
+    pub effect_sequence: u64,
+    pub completed: Vec<Value>,
+    next_frame_seq: u64,
+}
+
+impl State {
+    fn new() -> Self {
+        Self {
+            usage: ResourceUsage::default(),
+            effects: Vec::new(),
+            effect_sequence: 0,
+            completed: Vec::new(),
+            next_frame_seq: 1,
+        }
+    }
+
+    fn alloc_frame_seq(&mut self) -> u64 {
+        let seq = self.next_frame_seq;
+        self.next_frame_seq = self.next_frame_seq.saturating_add(1);
+        seq
+    }
+}
+
+/// Everything the drive loop mutates. Plain data, so a debugged run
+/// can suspend (return it to the holder) and resume (drive it again)
+/// without re-execution or interpreter duplication.
+pub(crate) struct LiveParts {
+    pub state: State,
+    pub frame: Frame,
+    pub stack: Vec<Caller>,
 }
 
 pub struct Engine<'a> {
@@ -116,26 +148,26 @@ impl<'a> Engine<'a> {
         })
     }
 
+    /// Function index for a callable identity (function or semantic).
+    pub(crate) fn function_index(&self, function: &str) -> Option<usize> {
+        self.functions.get(function).copied()
+    }
+
     pub fn run(self, target: CallTarget, arguments: Vec<Value>) -> EngineResult {
-        let mut state = State {
-            usage: ResourceUsage::default(),
-            effects: Vec::new(),
-            effect_sequence: 0,
-            completed: Vec::new(),
-        };
-        let entry = match target {
-            CallTarget::ByName { module, name } => self.admitted.callable_by_name(&module, &name),
-            CallTarget::ByFunction { function } => self.admitted.callable_by_function(&function),
-        };
         let finish = |state: &State, outcome: Outcome| EngineResult {
             outcome,
             returned: state.completed.clone(),
             usage: state.usage.clone(),
             effects: state.effects.clone(),
         };
+        let entry = match target {
+            CallTarget::ByName { module, name } => self.admitted.callable_by_name(&module, &name),
+            CallTarget::ByFunction { function } => self.admitted.callable_by_function(&function),
+        };
+        let empty = State::new();
         let Some(callable_index) = entry else {
             return finish(
-                &state,
+                &empty,
                 Outcome::InvalidRequest {
                     reason: "unknown callable".to_owned(),
                 },
@@ -144,33 +176,60 @@ impl<'a> Engine<'a> {
         let callable = &self.admitted.artifact.callables[callable_index];
         let Some(&function_index) = self.functions.get(&callable.function) else {
             return finish(
-                &state,
+                &empty,
                 Outcome::InvalidRequest {
                     reason: "callable function not in code section".to_owned(),
                 },
             );
         };
-        if let Err(outcome) = state.usage.enter_call(&self.envelope) {
-            return finish(&state, outcome);
+        let (mut parts, begun) = self.begin(function_index, arguments);
+        if let Err(outcome) = begun {
+            return finish(&parts.state, outcome);
         }
-        let mut frame = Frame {
-            function: function_index,
-            values: BTreeMap::new(),
-            block: String::new(),
-            iters: BTreeMap::new(),
-            ip: 0,
+        let outcome = match self.drive(&mut parts, None) {
+            DriveExit::Finished(outcome) => outcome,
+            DriveExit::Suspended(_) => Outcome::Trap {
+                detail: "suspend without debugger".to_owned(),
+            },
         };
-        match self.bind_entry(&mut state, function_index, &mut frame, arguments) {
-            Ok(entry_block) => frame.block = entry_block,
+        parts.state.usage.exit_call();
+        finish(&parts.state, outcome)
+    }
+
+    /// Begin one call: entry frame plus bound arguments. Shared by
+    /// one-shot and debug entry so both bind identically. Always
+    /// returns the parts (partial on error) so usage accounting for
+    /// failed entry matches one-shot behavior exactly.
+    pub(crate) fn begin(
+        &self,
+        function_index: usize,
+        arguments: Vec<Value>,
+    ) -> (LiveParts, Result<(), Outcome>) {
+        let mut parts = LiveParts {
+            state: State::new(),
+            frame: Frame {
+                function: function_index,
+                values: BTreeMap::new(),
+                block: String::new(),
+                iters: BTreeMap::new(),
+                ip: 0,
+                seq: 0,
+            },
+            stack: Vec::new(),
+        };
+        if let Err(outcome) = parts.state.usage.enter_call(&self.envelope) {
+            return (parts, Err(outcome));
+        }
+        match self.bind_entry(&mut parts.state, function_index, &mut parts.frame, arguments) {
+            Ok(entry_block) => {
+                parts.frame.block = entry_block;
+                (parts, Ok(()))
+            }
             Err(outcome) => {
-                state.usage.exit_call();
-                return finish(&state, outcome);
+                parts.state.usage.exit_call();
+                (parts, Err(outcome))
             }
         }
-        let mut stack: Vec<Caller> = Vec::new();
-        let outcome = self.drive(&mut state, &mut frame, &mut stack);
-        state.usage.exit_call();
-        finish(&state, outcome)
     }
 
     /// Bind entry arguments to function inputs by position with arity
@@ -257,79 +316,417 @@ impl<'a> Engine<'a> {
     }
 
     /// Main loop over an explicit frame stack. Calls push, returns pop.
-    #[allow(clippy::ptr_arg)]
-    fn drive(&self, state: &mut State, frame: &mut Frame, stack: &mut Vec<Caller>) -> Outcome {
+    /// With a debugger attached, matched safe points return
+    /// [`DriveExit::Suspended`] instead of continuing; the holder
+    /// resumes with the same parts, so suspension never re-executes.
+    /// Without a debugger the hooks compile to no-ops and behavior is
+    /// exactly the one-shot path.
+    #[allow(clippy::ptr_arg, clippy::too_many_lines)]
+    pub(crate) fn drive(
+        &self,
+        parts: &mut LiveParts,
+        mut dbg: Option<&mut DebugDriver>,
+    ) -> DriveExit {
         loop {
-            let function_index = frame.function;
-            let block_id = frame.block.clone();
+            let function_index = parts.frame.function;
+            let block_id = parts.frame.block.clone();
+            let depth = parts.stack.len();
             let Some(&block_index) = self.blocks[function_index].get(&block_id) else {
-                return Outcome::Trap {
-                    detail: format!("unknown block {block_id}"),
-                };
+                return self.terminal(
+                    parts,
+                    dbg,
+                    Outcome::Trap {
+                        detail: format!("unknown block {block_id}"),
+                    },
+                );
             };
-            if let Err(outcome) = self.enter_block(frame, function_index, &block_id) {
-                return outcome;
+            // A function-entry suspension already ran block entry for
+            // the callee entry block; the resumed loop skips it once
+            // so iteration accounting and events run exactly once.
+            let prefetched = dbg
+                .as_deref_mut()
+                .is_some_and(|driver| driver.take_block_prefetched());
+            if !prefetched {
+                if let Err(outcome) =
+                    self.enter_block(&mut parts.frame, function_index, &block_id)
+                {
+                    return self.terminal(parts, dbg, outcome);
+                }
+                if let Some(driver) = dbg.as_deref_mut() {
+                    driver.note_block_enter(depth, &block_id);
+                }
             }
             let block = &self.module.functions[function_index].blocks[block_index];
             let mut jumped = false;
-            while frame.ip < block.instructions.len() {
-                let instruction = &block.instructions[frame.ip];
-                if let Err(outcome) = state.usage.charge_step(&self.envelope) {
-                    return outcome;
+            while parts.frame.ip < block.instructions.len() {
+                let instruction = &block.instructions[parts.frame.ip];
+                if let Some(driver) = dbg.as_deref_mut() {
+                    let reasons = driver.before_operation(
+                        parts.frame.seq,
+                        depth,
+                        parts.frame.ip,
+                        function_index,
+                        &block_id,
+                        instruction,
+                        &parts.frame.values,
+                    );
+                    if !reasons.is_empty() {
+                        let kinds = DebugDriver::suspend_kinds("operation", &reasons);
+                        let safe_point = driver.operation_safe_point(
+                            parts.frame.seq,
+                            depth,
+                            parts.state.usage.steps,
+                        );
+                        return DriveExit::Suspended(Box::new(SuspendRequest {
+                            reasons,
+                            safe_point,
+                            position: (
+                                parts.frame.seq,
+                                parts.frame.block.clone(),
+                                parts.frame.ip,
+                            ),
+                            kinds,
+                            pending_terminal: None,
+                        }));
+                    }
                 }
-                match self.step_instruction(state, frame, stack, instruction) {
-                    Step::Continue => frame.ip += 1,
-                    Step::Jump(target) => {
-                        if let Err(outcome) = state.usage.charge_step(&self.envelope) {
-                            return outcome;
+                if let Err(outcome) = parts.state.usage.charge_step(&self.envelope) {
+                    return self.terminal(parts, dbg, outcome);
+                }
+                match self.step_instruction(
+                    &mut parts.state,
+                    &mut parts.frame,
+                    &mut parts.stack,
+                    instruction,
+                    dbg.as_deref_mut(),
+                ) {
+                    Step::Continue => {
+                        if let Some(driver) = dbg.as_deref_mut() {
+                            driver.after_operation(
+                                parts.frame.seq,
+                                depth,
+                                &block_id,
+                                instruction,
+                                &parts.frame.values,
+                            );
                         }
-                        frame.block = target;
-                        frame.ip = 0;
+                        parts.frame.ip += 1;
+                    }
+                    Step::Jump(target) => {
+                        // Instruction-level jumps come only from Call:
+                        // the frame already switched to the callee.
+                        if matches!(
+                            instruction.kind,
+                            mncs_model::SsaInstructionKind::Call { .. }
+                        ) {
+                            if let Some(driver) = dbg.as_deref_mut() {
+                                let callee_seq = parts.frame.seq;
+                                let callee_function = parts.frame.function;
+                                let new_depth = parts.stack.len();
+                                let arguments: Vec<(String, Value)> = parts
+                                    .frame
+                                    .values
+                                    .iter()
+                                    .map(|(binding, value)| (binding.clone(), value.clone()))
+                                    .collect();
+                                driver.note_call_enter(
+                                    &instruction.identity.0,
+                                    callee_function,
+                                    callee_seq,
+                                    new_depth,
+                                    &arguments,
+                                );
+                                let mut entry_reasons =
+                                    driver.evaluate_function_entry(callee_function);
+                                // Merge the callee's first-operation
+                                // reasons so entry suspends once.
+                                let first = self.module.functions[callee_function]
+                                    .blocks
+                                    .first()
+                                    .and_then(|entry| entry.instructions.first());
+                                if let Some(first) = first {
+                                    if driver.stop_arrived(callee_seq, &target, 0, "operation") {
+                                        entry_reasons.extend(
+                                            driver.evaluate_stops_for_instruction(new_depth, first),
+                                        );
+                                        if matches!(
+                                            first.kind,
+                                            mncs_model::SsaInstructionKind::HostCall { .. }
+                                        ) {
+                                            entry_reasons
+                                                .extend(driver.effect_before_reasons());
+                                        }
+                                    }
+                                }
+                                if !entry_reasons.is_empty() {
+                                    if let Err(outcome) =
+                                        parts.state.usage.charge_step(&self.envelope)
+                                    {
+                                        return self.terminal(parts, dbg, outcome);
+                                    }
+                                    parts.frame.block = target.clone();
+                                    parts.frame.ip = 0;
+                                    if let Err(outcome) = self.enter_block(
+                                        &mut parts.frame,
+                                        callee_function,
+                                        &target,
+                                    ) {
+                                        return self.terminal(parts, dbg, outcome);
+                                    }
+                                    driver.note_block_enter(new_depth, &target);
+                                    // Suspend with the jump applied and
+                                    // the block entered: resume skips
+                                    // entry once and executes the
+                                    // first operation.
+                                    driver.note_function_entry_position(
+                                        callee_function,
+                                        &target,
+                                        first.map(|instruction| {
+                                            (
+                                                instruction.identity.0.clone(),
+                                                instruction
+                                                    .semantic_identity
+                                                    .as_ref()
+                                                    .map(|id| id.0.clone()),
+                                            )
+                                        }),
+                                    );
+                                    driver.set_block_prefetched();
+                                    let kinds = DebugDriver::suspend_kinds("operation", &entry_reasons);
+                                    let safe_point = driver.operation_safe_point(
+                                        callee_seq,
+                                        new_depth,
+                                        parts.state.usage.steps,
+                                    );
+                                    return DriveExit::Suspended(Box::new(SuspendRequest {
+                                        reasons: entry_reasons,
+                                        safe_point,
+                                        position: (callee_seq, target, 0),
+                                        kinds,
+                                        pending_terminal: None,
+                                    }));
+                                }
+                            }
+                        }
+                        if let Err(outcome) = parts.state.usage.charge_step(&self.envelope) {
+                            return self.terminal(parts, dbg, outcome);
+                        }
+                        parts.frame.block = target;
+                        parts.frame.ip = 0;
                         jumped = true;
                         break;
                     }
-                    Step::Halt(outcome) => return outcome,
+                    Step::Suspend(kind) => {
+                        return self.suspend_effect(parts, dbg, instruction, kind);
+                    }
+                    Step::Halt(outcome) => return self.terminal(parts, dbg, outcome),
                 }
             }
             if jumped {
                 continue;
             }
-            if let Err(outcome) = state.usage.charge_step(&self.envelope) {
-                return outcome;
+            if let Err(outcome) = parts.state.usage.charge_step(&self.envelope) {
+                return self.terminal(parts, dbg, outcome);
             }
             let terminator = &block.terminator;
-            match self.step_terminator(state, frame, stack, function_index, &block_id, terminator) {
+            match self.step_terminator(
+                &mut parts.state,
+                &mut parts.frame,
+                &mut parts.stack,
+                function_index,
+                &block_id,
+                terminator,
+            ) {
                 Step::Continue => {
                     // Return unwound one frame: resume the caller frame.
-                    let Some(caller) = stack.pop() else {
-                        return Outcome::Trap {
-                            detail: "return stack underflow".to_owned(),
-                        };
+                    let Some(caller) = parts.stack.pop() else {
+                        return self.terminal(
+                            parts,
+                            dbg,
+                            Outcome::Trap {
+                                detail: "return stack underflow".to_owned(),
+                            },
+                        );
                     };
-                    *frame = caller.frame;
-                    frame.ip += 1;
-                    if caller.output.is_some() && state.completed.is_empty() {
-                        return Outcome::InvalidRequest {
-                            reason: "callee returned no value".to_owned(),
+                    if let Some(driver) = dbg.as_deref_mut() {
+                        // Capture returned values from the callee frame
+                        // before it is dropped.
+                        let returned: Vec<(String, Value)> = match terminator {
+                            SsaTerminator::Return { values } => values
+                                .iter()
+                                .filter_map(|name| {
+                                    parts.frame.values.get(&name.0).map(|value| {
+                                        (name.0.clone(), value.clone())
+                                    })
+                                })
+                                .collect(),
+                            _ => Vec::new(),
                         };
+                        driver.note_return(parts.frame.seq, &returned, "returned");
+                    }
+                    parts.frame = caller.frame;
+                    // The call instruction sits at the restored ip;
+                    // capture it before advancing past the call.
+                    let caller_block = parts.frame.block.clone();
+                    let caller_ip = parts.frame.ip;
+                    parts.frame.ip += 1;
+                    if caller.output.is_some() && parts.state.completed.is_empty() {
+                        return self.terminal(
+                            parts,
+                            dbg,
+                            Outcome::InvalidRequest {
+                                reason: "callee returned no value".to_owned(),
+                            },
+                        );
                     }
                     if let Some(output) = caller.output {
-                        if let Some(value) = state.completed.first().cloned() {
-                            frame.values.insert(output, value);
+                        if let Some(value) = parts.state.completed.first().cloned() {
+                            parts.frame.values.insert(output, value);
                         }
                     }
-                    state.completed.clear();
+                    if let Some(driver) = dbg.as_deref_mut() {
+                        // The call's result lands now: emit its
+                        // operation_result so every operation_enter
+                        // pairs with exactly one result.
+                        let call_instruction = self.module.functions[parts.frame.function]
+                            .blocks
+                            .iter()
+                            .find(|block| block.identity.0 == caller_block)
+                            .and_then(|block| block.instructions.get(caller_ip));
+                        if let Some(call_instruction) = call_instruction {
+                            let call_depth = parts.stack.len();
+                            driver.after_operation(
+                                parts.frame.seq,
+                                call_depth,
+                                &caller_block,
+                                call_instruction,
+                                &parts.frame.values,
+                            );
+                        }
+                    }
+                    parts.state.completed.clear();
                 }
                 Step::Jump(target) => {
-                    if let Err(outcome) = state.usage.charge_step(&self.envelope) {
-                        return outcome;
+                    if let Err(outcome) = parts.state.usage.charge_step(&self.envelope) {
+                        return self.terminal(parts, dbg, outcome);
                     }
-                    frame.block = target;
-                    frame.ip = 0;
+                    parts.frame.block = target;
+                    parts.frame.ip = 0;
                 }
-                Step::Halt(outcome) => return outcome,
+                Step::Suspend(_) => {
+                    // Terminators never suspend; the arm exists so the
+                    // shared Step type stays total.
+                    return self.terminal(
+                        parts,
+                        dbg,
+                        Outcome::Trap {
+                            detail: "terminator suspended".to_owned(),
+                        },
+                    );
+                }
+                Step::Halt(outcome) => return self.terminal(parts, dbg, outcome),
             }
         }
+    }
+
+    /// Suspend at an effect boundary. `effect_after` advances past the
+    /// completed instruction first so resume cannot dispatch twice,
+    /// and emits the pending `operation_result` for the completed op.
+    fn suspend_effect(
+        &self,
+        parts: &mut LiveParts,
+        dbg: Option<&mut DebugDriver>,
+        instruction: &SsaInstruction,
+        kind: SuspendKind,
+    ) -> DriveExit {
+        let Some(driver) = dbg else {
+            return DriveExit::Finished(Outcome::Trap {
+                detail: "suspend without debugger".to_owned(),
+            });
+        };
+        let depth = parts.stack.len();
+        match kind {
+            SuspendKind::EffectBefore(reasons) => {
+                let kinds = DebugDriver::suspend_kinds("effect_before", &reasons);
+                let safe_point =
+                    driver.effect_safe_point(parts.frame.seq, depth, parts.state.usage.steps, "before");
+                DriveExit::Suspended(Box::new(SuspendRequest {
+                    reasons,
+                    safe_point,
+                    position: (
+                        parts.frame.seq,
+                        parts.frame.block.clone(),
+                        parts.frame.ip,
+                    ),
+                    kinds,
+                    pending_terminal: None,
+                }))
+            }
+            SuspendKind::EffectAfter(reasons) => {
+                driver.after_operation(
+                    parts.frame.seq,
+                    depth,
+                    &parts.frame.block.clone(),
+                    instruction,
+                    &parts.frame.values,
+                );
+                // Record the arrival at the completed instruction,
+                // then advance past it: resume continues at the next
+                // operation and can never dispatch twice.
+                let position = (
+                    parts.frame.seq,
+                    parts.frame.block.clone(),
+                    parts.frame.ip,
+                );
+                parts.frame.ip += 1;
+                let kinds = DebugDriver::suspend_kinds("effect_after", &reasons);
+                let safe_point =
+                    driver.effect_safe_point(parts.frame.seq, depth, parts.state.usage.steps, "after");
+                DriveExit::Suspended(Box::new(SuspendRequest {
+                    reasons,
+                    safe_point,
+                    position,
+                    kinds,
+                    pending_terminal: None,
+                }))
+            }
+        }
+    }
+
+    /// Single choke point for terminal outcomes. Observed runs emit
+    /// terminal events here and suspend before finalizing abnormal
+    /// outcomes when armed; unobserved runs finish identically.
+    fn terminal(
+        &self,
+        parts: &mut LiveParts,
+        dbg: Option<&mut DebugDriver>,
+        outcome: Outcome,
+    ) -> DriveExit {
+        let Some(driver) = dbg else {
+            return DriveExit::Finished(outcome);
+        };
+        let suspend_armed = driver.note_terminal(&outcome);
+        let mut reasons = driver.failure_stop_reasons();
+        if !outcome.is_completed() && suspend_armed && reasons.is_empty() {
+            reasons.push(crate::debug::StopReason::FailureOrTrap);
+        }
+        if outcome.is_completed() || (!suspend_armed && reasons.is_empty()) {
+            return DriveExit::Finished(outcome);
+        }
+        let depth = parts.stack.len();
+        let safe_point =
+            driver.terminal_safe_point(parts.frame.seq, depth, parts.state.usage.steps);
+        DriveExit::Suspended(Box::new(SuspendRequest {
+            reasons,
+            safe_point,
+            position: (
+                parts.frame.seq,
+                parts.frame.block.clone(),
+                parts.frame.ip,
+            ),
+            kinds: vec!["terminal".to_owned()],
+            pending_terminal: Some(outcome),
+        }))
     }
 
     /// Region iteration accounting on block entry. Every entry into a
@@ -456,6 +853,7 @@ impl<'a> Engine<'a> {
         frame: &mut Frame,
         stack: &mut Vec<Caller>,
         instruction: &SsaInstruction,
+        mut dbg: Option<&mut DebugDriver>,
     ) -> Step {
         let unsupported = |feature: String| Step::Halt(Outcome::Unsupported { feature });
         let invalid = |reason: String| Step::Halt(Outcome::InvalidRequest { reason });
@@ -978,6 +1376,7 @@ impl<'a> Engine<'a> {
                     return Step::Halt(outcome);
                 }
                 let output = instruction.outputs.first().map(|o| o.identity.0.clone());
+                let callee_seq = state.alloc_frame_seq();
                 let caller = Caller {
                     frame: std::mem::replace(
                         frame,
@@ -987,6 +1386,7 @@ impl<'a> Engine<'a> {
                             block: String::new(),
                             iters: BTreeMap::new(),
                             ip: 0,
+                            seq: callee_seq,
                         },
                     ),
                     output,
@@ -1034,6 +1434,16 @@ impl<'a> Engine<'a> {
                         "recorded",
                         None,
                     );
+                    // Record-only: observable, never suspending (no
+                    // external boundary is crossed).
+                    if let Some(driver) = dbg.as_deref_mut() {
+                        driver.note_recorded_effect(
+                            stack.len(),
+                            &frame.block,
+                            instruction,
+                            &format!("effect:{}", effect.0),
+                        );
+                    }
                 }
                 Step::Continue
             }
@@ -1062,6 +1472,19 @@ impl<'a> Engine<'a> {
                     operation: operation.clone(),
                     inputs,
                 };
+                if let Some(driver) = dbg.as_deref_mut() {
+                    let reasons = driver.before_effect(
+                        frame.seq,
+                        stack.len(),
+                        frame.ip,
+                        &frame.block,
+                        instruction,
+                        &request,
+                    );
+                    if !reasons.is_empty() {
+                        return Step::Suspend(SuspendKind::EffectBefore(reasons));
+                    }
+                }
                 match self.caps.dispatch(&request) {
                     Ok(response) => {
                         let provider = response.provider.clone();
@@ -1081,10 +1504,23 @@ impl<'a> Engine<'a> {
                         for (output, value) in instruction.outputs.iter().zip(outputs) {
                             frame.values.insert(output.identity.0.clone(), value);
                         }
+                        if let Some(driver) = dbg.as_deref_mut() {
+                            let reasons =
+                                driver.after_effect(stack.len(), &frame.block, instruction, "completed");
+                            if !reasons.is_empty() {
+                                return Step::Suspend(SuspendKind::EffectAfter(reasons));
+                            }
+                        }
                         Step::Continue
                     }
                     Err(outcome) => {
                         self.observe_effect(state, request, outcome.tag(), None);
+                        // Failed dispatch still closes the observation
+                        // honestly; stop reasons are discarded because
+                        // the terminal boundary owns this stop.
+                        if let Some(driver) = dbg {
+                            driver.after_effect(stack.len(), &frame.block, instruction, outcome.tag());
+                        }
                         Step::Halt(outcome)
                     }
                 }
@@ -1121,6 +1557,15 @@ enum Step {
     Continue,
     Jump(String),
     Halt(Outcome),
+    Suspend(SuspendKind),
+}
+
+/// Suspension requested from inside one instruction's execution.
+/// Only effect boundaries suspend mid-instruction; everything else
+/// suspends between transitions.
+pub(crate) enum SuspendKind {
+    EffectBefore(Vec<StopReason>),
+    EffectAfter(Vec<StopReason>),
 }
 
 fn names(ids: &[SemanticId]) -> Vec<String> {

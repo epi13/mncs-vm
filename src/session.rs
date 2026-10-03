@@ -42,6 +42,106 @@ impl<'a> Session<'a> {
         self.admitted.artifact_id()
     }
 
+    /// Start one debugged call. Runs to the first bound stop,
+    /// terminal boundary, or finish. The returned live execution (if
+    /// stopped) holds the same run state that one-shot `call` would
+    /// drive to completion: stopping changes nothing about how the
+    /// program executes.
+    pub fn start_debug<'e>(
+        &'e mut self,
+        caps: &'e CapabilityEnv,
+        spec: CallSpec,
+        config: crate::debug::DebugConfig,
+    ) -> crate::debug::DebugStart<'e> {
+        use crate::debug::{DebugStart, FinishRecord, LiveExecution};
+        let resolved = match &spec.target {
+            CallTarget::ByName { module, name } => {
+                self.admitted.callable_by_name(module, name)
+            }
+            CallTarget::ByFunction { function } => self.admitted.callable_by_function(function),
+        };
+        let invalid = |session: &Self, reason: String| {
+            let outcome = Outcome::InvalidRequest { reason };
+            let stream = crate::debug::empty_stream();
+            let mut record = session.record(
+                caps,
+                &spec,
+                String::new(),
+                String::new(),
+                Vec::new(),
+                outcome.clone(),
+                Vec::new(),
+                ResourceUsage::default(),
+                Vec::new(),
+            );
+            record.observation = Some(stream.clone());
+            DebugStart::Finished(Box::new(FinishRecord {
+                outcome,
+                record,
+                stream,
+            }))
+        };
+        let Some(callable_index) = resolved else {
+            return invalid(self, "unknown callable".to_owned());
+        };
+        let entry = &self.admitted.artifact.callables[callable_index];
+        let callable_function = entry.function.clone();
+        let callable_name = format!("{}::{}", entry.module, entry.name);
+        let declared: Vec<ResourceLimit> = self
+            .admitted
+            .artifact
+            .requirements
+            .bounds
+            .iter()
+            .map(|bound| ResourceLimit {
+                dimension: bound.dimension.clone(),
+                limit: bound.limit,
+            })
+            .collect();
+        let envelope = ResourceEnvelope::merged(&declared, &spec.envelope.limits);
+        let arguments: Vec<Value> = spec.arguments.iter().map(from_wire).collect();
+        let engine = match Engine::new(self.admitted, envelope.clone(), caps) {
+            Some(engine) => engine,
+            None => return invalid(self, "admitted artifact has no executable code".to_owned()),
+        };
+        let Some(function_index) = engine_function_index(&engine, &callable_function) else {
+            return invalid(self, "callable function not in code section".to_owned());
+        };
+        let execution_id = crate::debug::execution_identity(
+            self.admitted.artifact_id(),
+            &callable_function,
+            &spec.arguments,
+            &caps.admitted_capabilities(),
+            &envelope,
+        );
+        let (parts, begun) = engine.begin(function_index, arguments.clone());
+        let mut live = LiveExecution::new(
+            engine,
+            parts,
+            crate::debug::DebugDriver::new(
+                self.admitted.ssa_module().expect("engine admitted SSA"),
+                config,
+                execution_id.clone(),
+            ),
+            execution_id,
+            self.admitted.artifact_id().to_owned(),
+            callable_function,
+            callable_name,
+            arguments,
+            caps.admitted_capabilities(),
+            spec.envelope.limits.clone(),
+        );
+        if let Err(outcome) = begun {
+            // Entry failed before any transition: finish directly with
+            // the same outcome one-shot entry would produce.
+            return DebugStart::Finished(Box::new(live.finish_invalid(outcome)));
+        }
+        match live.drive_first() {
+            crate::debug::LiveEvent::Stopped(record) => DebugStart::Stopped(Box::new(live), record),
+            crate::debug::LiveEvent::Finished(finished) => DebugStart::Finished(finished),
+        }
+    }
+
     /// Execute one call. Deterministic in the admitted inputs: the
     /// same artifact, callable, arguments, capabilities, providers,
     /// and envelope produce the same outcome and evidence.
@@ -161,6 +261,12 @@ impl<'a> Session<'a> {
             effects,
             return_digest,
             effects_digest,
+            observation: None,
         }
     }
+}
+
+/// Function index for a callable identity, mirroring [`Engine::run`].
+fn engine_function_index(engine: &Engine, callable_function: &str) -> Option<usize> {
+    engine.function_index(callable_function)
 }

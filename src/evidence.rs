@@ -40,6 +40,10 @@ pub struct ExecutionRecord {
     pub return_digest: String,
     /// sha256 over the canonical JSON of the effect observations.
     pub effects_digest: String,
+    /// Retained observation stream for debugger-driven runs (`None`
+    /// for unobserved one-shot runs, whose shape is unchanged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<mncs_model::ExecutionObservationStream>,
 }
 
 impl ExecutionRecord {
