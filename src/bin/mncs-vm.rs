@@ -31,6 +31,7 @@ fn main() {
     let command = argv.get(1).map(String::as_str).unwrap_or("help");
     let code = match command {
         "run" => cmd_run(&argv[2..]),
+        "compile" => cmd_compile(&argv[2..]),
         "debug" => cmd_debug(&argv[2..]),
         "version" => {
             println!("mncs-vm {}", env!("CARGO_PKG_VERSION"));
@@ -49,7 +50,7 @@ fn print_help() {
         "mncs-vm: canonical MNCS VM runner and live-debug driver\n\nusage:\n  \
          mncs-vm run --artifact FILE|--compile FILE --callable MODULE::NAME|--function ID\n    \
          [--args FILE] [--envelope FILE] [--observe POLICY] [--provider CAP=FILE]...\n    \
-         [--output FILE]\n  mncs-vm debug --stdio\n  mncs-vm debug --serve SOCKET\n  mncs-vm version"
+         [--output FILE]\n  mncs-vm compile FILE --output FILE\n  mncs-vm debug --stdio\n  mncs-vm debug --serve SOCKET\n  mncs-vm version"
     );
 }
 
@@ -220,6 +221,59 @@ fn cmd_run(argv: &[String]) -> i32 {
 fn usage_error(message: &str) -> i32 {
     eprintln!("mncs-vm: {message}");
     2
+}
+
+// ---------------------------------------------------------------------------
+// compile: admit-once artifact emission for reuse
+// ---------------------------------------------------------------------------
+
+fn cmd_compile(argv: &[String]) -> i32 {
+    let mut source: Option<&str> = None;
+    let mut output: Option<&str> = None;
+    let mut index = 0;
+    while index < argv.len() {
+        match argv[index].as_str() {
+            "--output" => {
+                index += 1;
+                output = argv.get(index).map(String::as_str);
+                if output.is_none() {
+                    return usage_error("compile --output needs a path");
+                }
+            }
+            flag if flag.starts_with('-') => {
+                return usage_error(&format!("compile: unknown option {flag}"));
+            }
+            positional => {
+                if source.is_some() {
+                    return usage_error("compile takes exactly one source file");
+                }
+                source = Some(positional);
+            }
+        }
+        index += 1;
+    }
+    let (Some(source), Some(output)) = (source, output) else {
+        return usage_error("usage: mncs-vm compile FILE --output FILE");
+    };
+    let admitted = match mncs_vm::harness::compile_file(std::path::Path::new(source)) {
+        Ok(admitted) => admitted,
+        Err(error) => return run_error(&format!("cannot compile {source}: {error}")),
+    };
+    // Sealed bytes (identity bound), not canonical bytes (identity
+    // blanked): admission verifies the sealed identity on load.
+    let bytes = serde_json::to_vec(&admitted.artifact).expect("artifact is serializable");
+    if let Err(error) = std::fs::write(output, &bytes) {
+        return run_error(&format!("cannot write {output}: {error}"));
+    }
+    println!(
+        "{}",
+        serde_json::json!({
+            "artifact_id": admitted.artifact_id(),
+            "bytes": bytes.len(),
+            "output": output,
+        })
+    );
+    0
 }
 
 fn run_error(message: &str) -> i32 {
@@ -405,6 +459,10 @@ fn serve_socket(path: &Path) -> i32 {
         };
         // One connection at a time: the debug handle is single-owner,
         // and short debugger connections never hold the socket long.
+        // Clients must use one request-response round trip per
+        // connection and close promptly; a client that holds a
+        // connection open across operations starves every other
+        // client until it reaches EOF.
         let reader = BufReader::new(stream.try_clone().unwrap_or_else(|_| {
             panic!("socket clone failed while serving {}", path.display())
         }));

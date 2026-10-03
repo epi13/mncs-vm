@@ -365,6 +365,24 @@ async effect suspension (dispatch is synchronous), expression
 evaluation, time travel, and multi-execution control. See
 `unsupported_debug_capabilities()`.
 
+### 13b. Debug performance notes
+
+The hot path is indexed: stop conditions live in per-identity tables
+(operation, function, effect phase, failure class) rebuilt on
+bind/clear, so matching costs O(matches), not O(stops); selected
+capture uses a set. Value instances are captured only when the event
+or its values are retained — live inspection mints on demand — so a
+debug run with capture off pays hooks and bookkeeping but no hashing
+per value. Event and value identities still derive from the same
+canonical bytes as before (see the derivation-stability test); only
+the intermediate allocation is gone.
+
+Cold cost is dominated by compilation, not execution: prefer a
+release driver (`mncs-vm compile` once, then `run --artifact` or
+debug from the artifact) over recompiling per run. Admission
+re-verifies artifact identity on every load; that is the trust
+boundary and stays.
+
 ## Determinism model
 
 The VM should separate three categories.

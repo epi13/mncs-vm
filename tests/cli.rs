@@ -336,3 +336,49 @@ fn socket_daemon_reconnects_to_live_execution() {
     assert!(status.success());
     assert!(!socket.exists(), "daemon removes its socket");
 }
+
+#[test]
+fn compile_then_run_matches_direct_compile() {
+    let artifact_path =
+        std::env::temp_dir().join(format!("mncs-vm-cli-artifact-{}.json", std::process::id()));
+    let output = Command::new(bin())
+        .args(["compile", &corpus("arith.mncs"), "--output", artifact_path.to_str().unwrap()])
+        .output()
+        .expect("spawn mncs-vm compile");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let compiled: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(compiled["artifact_id"].as_str().is_some_and(|id| id.starts_with("sha256:")));
+    let args_path = std::env::temp_dir().join(format!("mncs-vm-cli-args3-{}.json", std::process::id()));
+    std::fs::write(&args_path, serde_json::to_string(&vec![int_arg(3), int_arg(4)]).unwrap()).unwrap();
+    let via_artifact = Command::new(bin())
+        .args([
+            "run",
+            "--artifact",
+            artifact_path.to_str().unwrap(),
+            "--callable",
+            "mncs.vmcorpus.arith.v1::add2",
+            "--args",
+            args_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn mncs-vm run --artifact");
+    let via_compile = Command::new(bin())
+        .args([
+            "run",
+            "--compile",
+            &corpus("arith.mncs"),
+            "--callable",
+            "mncs.vmcorpus.arith.v1::add2",
+            "--args",
+            args_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn mncs-vm run --compile");
+    let _ = std::fs::remove_file(&args_path);
+    let _ = std::fs::remove_file(&artifact_path);
+    assert!(via_artifact.status.success(), "{}", String::from_utf8_lossy(&via_artifact.stderr));
+    assert!(via_compile.status.success(), "{}", String::from_utf8_lossy(&via_compile.stderr));
+    let from_artifact: serde_json::Value = serde_json::from_slice(&via_artifact.stdout).unwrap();
+    let from_compile: serde_json::Value = serde_json::from_slice(&via_compile.stdout).unwrap();
+    assert_eq!(from_artifact, from_compile, "artifact reuse is byte-identical");
+}

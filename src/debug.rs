@@ -43,7 +43,7 @@
 //! assigned once keep version 0. This is a runtime-local instance
 //! identity, distinct from the semantic origin carried alongside it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mncs_model::{
     ExecutionObservationCompleteness, ExecutionObservationEvent, ExecutionObservationPolicy,
@@ -298,6 +298,46 @@ pub(crate) struct SuspendRequest {
     pub pending_terminal: Option<Outcome>,
 }
 
+/// Hot-path indexes over bound stop conditions: every semantic
+/// transition evaluates stops, so matching is O(1) lookup plus work
+/// proportional to matches, never a scan over all stops. Index
+/// vectors hold config positions in ascending order, so reason order
+/// is identical to the unindexed scan. Rebuilt on bind/clear (cold).
+#[derive(Default)]
+struct StopIndexes {
+    by_operation: HashMap<String, Vec<usize>>,
+    by_function: HashMap<String, Vec<usize>>,
+    effect_before: Vec<usize>,
+    effect_after: Vec<usize>,
+    failure: Vec<usize>,
+}
+
+impl StopIndexes {
+    fn rebuild(stops: &[StopCondition]) -> Self {
+        let mut indexes = StopIndexes::default();
+        for (index, condition) in stops.iter().enumerate() {
+            match &condition.target {
+                StopTarget::Operation { instruction } => {
+                    indexes.by_operation.entry(instruction.clone()).or_default().push(index);
+                }
+                StopTarget::Function { function } => {
+                    indexes.by_function.entry(function.clone()).or_default().push(index);
+                }
+                StopTarget::EffectBoundary { phase } => {
+                    if phase == "before" || phase == "both" {
+                        indexes.effect_before.push(index);
+                    }
+                    if phase == "after" || phase == "both" {
+                        indexes.effect_after.push(index);
+                    }
+                }
+                StopTarget::FailureOrTrap => indexes.failure.push(index),
+            }
+        }
+        indexes
+    }
+}
+
 /// Per-execution debug state: observation stream builder, stop
 /// evaluation, and identity minting.
 pub(crate) struct DebugDriver {
@@ -340,6 +380,13 @@ pub(crate) struct DebugDriver {
     block_prefetched: bool,
     /// Monotonic effect counter for deterministic effect identities.
     next_effect: u64,
+    /// Hot-path stop indexes (rebuilt on bind/clear) and the selected
+    /// operation set (policy is immutable after construction).
+    stop_indexes: StopIndexes,
+    selected_operations: HashSet<String>,
+    /// `short_digest(execution_id)`, computed once: frame identities
+    /// embed it on every call.
+    frame_prefix: String,
 }
 
 impl DebugDriver {
@@ -385,6 +432,14 @@ impl DebugDriver {
                 }
             }
         }
+        let frame_prefix = short_digest(&execution_id);
+        let stop_indexes = StopIndexes::rebuild(&config.stops);
+        let selected_operations: HashSet<String> = config
+            .policy
+            .selected_operations
+            .iter()
+            .map(|id| id.0.clone())
+            .collect();
         Self {
             module: module.clone(),
             config,
@@ -409,6 +464,9 @@ impl DebugDriver {
             emit_invoke: None,
             block_prefetched: false,
             next_effect: 0,
+            stop_indexes,
+            selected_operations,
+            frame_prefix,
         }
     }
 
@@ -429,8 +487,9 @@ impl DebugDriver {
     fn retains_operation(&self, operation: Option<&str>, failure_class: bool) -> bool {
         match self.capture() {
             ObservationCapturePolicy::None => false,
-            ObservationCapturePolicy::Selected => operation
-                .is_some_and(|identity| self.stream.policy.selected_operations.iter().any(|id| id.0 == identity)),
+            ObservationCapturePolicy::Selected => {
+                operation.is_some_and(|identity| self.selected_operations.contains(identity))
+            }
             ObservationCapturePolicy::FailureOnly => failure_class,
             ObservationCapturePolicy::Bounded | ObservationCapturePolicy::Diagnostic => true,
         }
@@ -443,8 +502,51 @@ impl DebugDriver {
         self.captures_events() && self.retains_operation(operation, failure_class)
     }
 
-    fn mint_event_id(&self, sequence: u64, kind: &str, material: &serde_json::Value) -> SemanticId {
-        let bytes = serde_json::to_vec(&(sequence, kind, material)).expect("event material serializes");
+    // Identity input mirrors the event struct field-for-field; a
+    // builder would only re-list the same eleven parameters.
+    #[allow(clippy::too_many_arguments)]
+    fn mint_event_id(
+        &self,
+        sequence: u64,
+        kind: &str,
+        frame: &Option<SemanticId>,
+        block: &Option<SemanticId>,
+        operation: &Option<SemanticId>,
+        inputs: &[SemanticId],
+        outputs: &[SemanticId],
+        effect: &Option<SemanticId>,
+        failure: &Option<SemanticId>,
+        status: &Option<String>,
+    ) -> SemanticId {
+        // Borrowing material: byte-identical to the previous
+        // `serde_json::json!` object (keys alphabetical, as the JSON
+        // map orders them) without building an intermediate Value.
+        // The derivation-stability test pins the resulting identities.
+        #[derive(Serialize)]
+        struct EventMaterial<'a> {
+            block: &'a Option<SemanticId>,
+            effect: &'a Option<SemanticId>,
+            execution: &'a str,
+            failure: &'a Option<SemanticId>,
+            frame: &'a Option<SemanticId>,
+            inputs: &'a [SemanticId],
+            operation: &'a Option<SemanticId>,
+            outputs: &'a [SemanticId],
+            status: &'a Option<String>,
+        }
+        let material = EventMaterial {
+            block,
+            effect,
+            execution: &self.execution_id,
+            failure,
+            frame,
+            inputs,
+            operation,
+            outputs,
+            status,
+        };
+        let bytes =
+            serde_json::to_vec(&(sequence, kind, &material)).expect("event material serializes");
         SemanticId(format!("mncs:vm:event:{}", short_digest_hex(&bytes)))
     }
 
@@ -478,13 +580,10 @@ impl DebugDriver {
             self.dropped_events = self.dropped_events.saturating_add(1);
             return;
         }
-        let material = serde_json::json!({
-            "execution": self.execution_id,
-            "frame": frame, "block": block, "operation": operation,
-            "inputs": inputs, "outputs": outputs,
-            "effect": effect, "failure": failure, "status": status,
-        });
-        let identity = self.mint_event_id(sequence, kind, &material);
+        let identity = self.mint_event_id(
+            sequence, kind, &frame, &block, &operation, &inputs, &outputs, &effect, &failure,
+            &status,
+        );
         self.stream.events.push(ExecutionObservationEvent {
             identity,
             sequence,
@@ -619,7 +718,7 @@ impl DebugDriver {
         entry_function: usize,
         arguments: &[(String, Value)],
     ) {
-        let root = SemanticId(format!("mncs:vm:frame:{}:0", short_digest(&self.execution_id)));
+        let root = SemanticId(format!("mncs:vm:frame:{}:0", self.frame_prefix));
         self.frame_ids.push(root.clone());
         let function_identity = self.module.functions[entry_function].identity.0.clone();
         if self.captures_events() {
@@ -710,15 +809,22 @@ impl DebugDriver {
         self.position_block = block.to_owned();
         self.position_instruction = Some(instruction.identity.0.clone());
         self.position_semantic = instruction.semantic_identity.as_ref().map(|id| id.0.clone());
-        let operation = SemanticId(instruction.identity.0.clone());
         if self.emit_enter_arrived(frame_seq, block, ip) {
+            // Capture input instances only when the event or its values
+            // are actually retained; otherwise both the minted identities
+            // and the event are discarded, and live views mint on demand.
+            // (capture_value retains nothing when this is false, so the
+            // versions map is untouched either way.)
+            let operation = SemanticId(instruction.identity.0.clone());
             let mut inputs = Vec::new();
-            for input in &instruction.inputs {
-                if let Some(value) = values.get(&input.0) {
-                    if let Some(instance) =
-                        self.capture_value(frame_seq, &input.0, "input", Some(&operation), value)
-                    {
-                        inputs.push(instance);
+            if self.retains_values_for(Some(&operation.0), false) {
+                for input in &instruction.inputs {
+                    if let Some(value) = values.get(&input.0) {
+                        if let Some(instance) =
+                            self.capture_value(frame_seq, &input.0, "input", Some(&operation), value)
+                        {
+                            inputs.push(instance);
+                        }
                     }
                 }
             }
@@ -798,19 +904,21 @@ impl DebugDriver {
         depth: usize,
         arguments: &[(String, Value)],
     ) {
-        let callee = SemanticId(format!(
-            "mncs:vm:frame:{}:{callee_seq}",
-            short_digest(&self.execution_id)
-        ));
+        let callee = SemanticId(format!("mncs:vm:frame:{}:{callee_seq}", self.frame_prefix));
         self.frame_ids.push(callee.clone());
         let function_identity = self.module.functions[callee_function].identity.0.clone();
         let mut inputs = Vec::new();
-        let operation = SemanticId(call_operation.to_owned());
-        for (binding, value) in arguments {
-            if let Some(instance) =
-                self.capture_value(callee_seq, binding, "argument", Some(&operation), value)
-            {
-                inputs.push(instance);
+        // Argument instances feed retained frames only; live views mint
+        // on demand. (capture_value retains nothing when capture is off,
+        // so skipping here leaves the versions map untouched.)
+        if self.captures_events() {
+            let operation = SemanticId(call_operation.to_owned());
+            for (binding, value) in arguments {
+                if let Some(instance) =
+                    self.capture_value(callee_seq, binding, "argument", Some(&operation), value)
+                {
+                    inputs.push(instance);
+                }
             }
         }
         if self.captures_events() {
@@ -818,7 +926,7 @@ impl DebugDriver {
                 identity: callee.clone(),
                 function: SemanticId(function_identity),
                 parent: self.frame_ids.get(depth.saturating_sub(1)).cloned(),
-                call_operation: Some(operation),
+                call_operation: Some(SemanticId(call_operation.to_owned())),
                 depth: depth as u64,
                 arguments: inputs.clone(),
             });
@@ -926,7 +1034,7 @@ impl DebugDriver {
             if self.captures_events() {
                 let identity = SemanticId(format!(
                     "mncs:vm:effect:{}:{effect_sequence}",
-                    short_digest(&self.execution_id)
+                    self.frame_prefix
                 ));
                 self.stream.effects.push(ExecutionObservedEffect {
                     identity: identity.clone(),
@@ -986,18 +1094,7 @@ impl DebugDriver {
                 false,
             );
         }
-        self.config
-            .stops
-            .iter()
-            .filter_map(|condition| match &condition.target {
-                StopTarget::EffectBoundary { phase } if phase == "after" || phase == "both" => {
-                    Some(StopReason::EffectBoundary {
-                        condition: condition.id.clone(),
-                        phase: "after".to_owned(),
-                    })
-                }
-                _ => None,
-            })
+        self.effect_after_reasons().into_iter()
             .collect()
     }
 
@@ -1018,7 +1115,7 @@ impl DebugDriver {
         self.next_effect = self.next_effect.saturating_add(1);
         let identity = SemanticId(format!(
             "mncs:vm:effect:{}:{effect_sequence}",
-            short_digest(&self.execution_id)
+            self.frame_prefix
         ));
         self.stream.effects.push(ExecutionObservedEffect {
             identity: identity.clone(),
@@ -1066,21 +1163,13 @@ impl DebugDriver {
         instruction: &mncs_model::SsaInstruction,
     ) -> Vec<StopReason> {
         let mut reasons = Vec::new();
-        for condition in &self.config.stops {
-            match &condition.target {
-                StopTarget::Operation { instruction: target } => {
-                    if *target == instruction.identity.0 {
-                        reasons.push(StopReason::Breakpoint {
-                            condition: condition.id.clone(),
-                        });
-                    }
-                }
-                // Function entry is evaluated at call-entry hooks,
-                // not at every operation; effect and failure stops
-                // match at their own boundaries.
-                StopTarget::Function { .. }
-                | StopTarget::EffectBoundary { .. }
-                | StopTarget::FailureOrTrap => {}
+        // Indexed: only stops bound to this instruction are visited;
+        // positions ascend, so reason order matches the flat scan.
+        if let Some(positions) = self.stop_indexes.by_operation.get(&instruction.identity.0) {
+            for position in positions {
+                reasons.push(StopReason::Breakpoint {
+                    condition: self.config.stops[*position].id.clone(),
+                });
             }
         }
         if let Some(one_shot) = self.one_shot.take() {
@@ -1106,18 +1195,23 @@ impl DebugDriver {
     /// Evaluate function-entry stops at a call hook.
     pub(crate) fn evaluate_function_entry(&self, function_index: usize) -> Vec<StopReason> {
         let function = &self.module.functions[function_index];
-        self.config
-            .stops
+        // A target matches either identity; merge both hit lists in
+        // ascending position order (deduped) to match the flat scan.
+        let mut positions: Vec<usize> = Vec::new();
+        if let Some(hits) = self.stop_indexes.by_function.get(&function.identity.0) {
+            positions.extend(hits.iter().copied());
+        }
+        if function.semantic_identity.0 != function.identity.0 {
+            if let Some(hits) = self.stop_indexes.by_function.get(&function.semantic_identity.0) {
+                positions.extend(hits.iter().copied());
+            }
+        }
+        positions.sort_unstable();
+        positions.dedup();
+        positions
             .iter()
-            .filter_map(|condition| match &condition.target {
-                StopTarget::Function { function: target }
-                    if *target == function.identity.0 || *target == function.semantic_identity.0 =>
-                {
-                    Some(StopReason::FunctionEntry {
-                        condition: condition.id.clone(),
-                    })
-                }
-                _ => None,
+            .map(|position| StopReason::FunctionEntry {
+                condition: self.config.stops[*position].id.clone(),
             })
             .collect()
     }
@@ -1199,13 +1293,18 @@ impl DebugDriver {
         });
         let condition = StopCondition { id, target };
         self.config.stops.push(condition.clone());
+        self.stop_indexes = StopIndexes::rebuild(&self.config.stops);
         condition
     }
 
     pub(crate) fn clear_stop(&mut self, id: &str) -> bool {
         let before = self.config.stops.len();
         self.config.stops.retain(|condition| condition.id != id);
-        self.config.stops.len() != before
+        let changed = self.config.stops.len() != before;
+        if changed {
+            self.stop_indexes = StopIndexes::rebuild(&self.config.stops);
+        }
+        changed
     }
 
     pub(crate) fn arm_one_shot(&mut self, one_shot: OneShot) {
@@ -1281,14 +1380,11 @@ impl DebugDriver {
 
     /// Persistent stops matching an abnormal terminal boundary.
     pub(crate) fn failure_stop_reasons(&self) -> Vec<StopReason> {
-        self.config
-            .stops
+        self.stop_indexes
+            .failure
             .iter()
-            .filter_map(|condition| match &condition.target {
-                StopTarget::FailureOrTrap => Some(StopReason::Breakpoint {
-                    condition: condition.id.clone(),
-                }),
-                _ => None,
+            .map(|position| StopReason::Breakpoint {
+                condition: self.config.stops[*position].id.clone(),
             })
             .collect()
     }
@@ -1296,17 +1392,23 @@ impl DebugDriver {
     /// Persistent effect-before stops, for merging into an operation
     /// stop on a HostCall instruction so one arrival suspends once.
     pub(crate) fn effect_before_reasons(&self) -> Vec<StopReason> {
-        self.config
-            .stops
+        self.stop_indexes
+            .effect_before
             .iter()
-            .filter_map(|condition| match &condition.target {
-                StopTarget::EffectBoundary { phase } if phase == "before" || phase == "both" => {
-                    Some(StopReason::EffectBoundary {
-                        condition: condition.id.clone(),
-                        phase: "before".to_owned(),
-                    })
-                }
-                _ => None,
+            .map(|position| StopReason::EffectBoundary {
+                condition: self.config.stops[*position].id.clone(),
+                phase: "before".to_owned(),
+            })
+            .collect()
+    }
+
+    pub(crate) fn effect_after_reasons(&self) -> Vec<StopReason> {
+        self.stop_indexes
+            .effect_after
+            .iter()
+            .map(|position| StopReason::EffectBoundary {
+                condition: self.config.stops[*position].id.clone(),
+                phase: "after".to_owned(),
             })
             .collect()
     }
@@ -1342,7 +1444,7 @@ impl DebugDriver {
         SafePoint {
             kind: "operation".to_owned(),
             execution: self.execution_id.clone(),
-            frame: format!("mncs:vm:frame:{}:{frame_seq}", short_digest(&self.execution_id)),
+            frame: format!("mncs:vm:frame:{}:{frame_seq}", self.frame_prefix),
             depth: depth as u64,
             function: function.identity.0.clone(),
             function_semantic: function.semantic_identity.0.clone(),
@@ -1648,7 +1750,7 @@ impl<'a> LiveExecution<'a> {
         let bytes = serde_json::to_vec(&material).expect("token material serializes");
         let token = format!(
             "dbg:{}:{}:{}",
-            short_digest(&self.execution_id),
+            self.driver.frame_prefix,
             self.stop_sequence,
             short_digest_hex(&bytes)
         );
@@ -1969,12 +2071,16 @@ fn transition_digest(
 }
 
 fn mint_value_id(execution_id: &str, frame_seq: u64, binding: &str, version: u64) -> SemanticId {
-    let material = serde_json::json!({
-        "execution": execution_id,
-        "frame": frame_seq,
-        "binding": binding,
-        "version": version,
-    });
+    // Borrowing material, byte-identical to the previous json! object
+    // (keys alphabetical). Pinned by the derivation-stability test.
+    #[derive(Serialize)]
+    struct ValueMaterial<'a> {
+        binding: &'a str,
+        execution: &'a str,
+        frame: u64,
+        version: u64,
+    }
+    let material = ValueMaterial { binding, execution: execution_id, frame: frame_seq, version };
     let bytes = serde_json::to_vec(&material).expect("value identity serializes");
     SemanticId(format!("mncs:vm:value:{}", full_digest_hex(&bytes)))
 }

@@ -1,0 +1,248 @@
+mncs 0.18;
+
+module mncs.vmcorpus.perf.v1;
+
+fn leaf(x: i64) -> (result: i64) {
+    return x + 1;
+}
+fn chain1(x: i64) -> (result: i64) {
+    return leaf(x) + 1;
+}
+fn chain2(x: i64) -> (result: i64) {
+    return chain1(x) + 1;
+}
+fn chain3(x: i64) -> (result: i64) {
+    return chain2(x) + 1;
+}
+fn chain4(x: i64) -> (result: i64) {
+    return chain3(x) + 1;
+}
+fn chain5(x: i64) -> (result: i64) {
+    return chain4(x) + 1;
+}
+fn chain6(x: i64) -> (result: i64) {
+    return chain5(x) + 1;
+}
+fn chain7(x: i64) -> (result: i64) {
+    return chain6(x) + 1;
+}
+fn chain8(x: i64) -> (result: i64) {
+    return chain7(x) + 1;
+}
+fn chain9(x: i64) -> (result: i64) {
+    return chain8(x) + 1;
+}
+fn chain10(x: i64) -> (result: i64) {
+    return chain9(x) + 1;
+}
+fn chain11(x: i64) -> (result: i64) {
+    return chain10(x) + 1;
+}
+fn chain12(x: i64) -> (result: i64) {
+    return chain11(x) + 1;
+}
+fn chain13(x: i64) -> (result: i64) {
+    return chain12(x) + 1;
+}
+fn chain14(x: i64) -> (result: i64) {
+    return chain13(x) + 1;
+}
+fn chain15(x: i64) -> (result: i64) {
+    return chain14(x) + 1;
+}
+fn chain16(x: i64) -> (result: i64) {
+    return chain15(x) + 1;
+}
+fn chain17(x: i64) -> (result: i64) {
+    return chain16(x) + 1;
+}
+fn chain18(x: i64) -> (result: i64) {
+    return chain17(x) + 1;
+}
+fn chain19(x: i64) -> (result: i64) {
+    return chain18(x) + 1;
+}
+fn chain20(x: i64) -> (result: i64) {
+    return chain19(x) + 1;
+}
+fn chain21(x: i64) -> (result: i64) {
+    return chain20(x) + 1;
+}
+fn chain22(x: i64) -> (result: i64) {
+    return chain21(x) + 1;
+}
+fn chain23(x: i64) -> (result: i64) {
+    return chain22(x) + 1;
+}
+fn chain24(x: i64) -> (result: i64) {
+    return chain23(x) + 1;
+}
+fn chain25(x: i64) -> (result: i64) {
+    return chain24(x) + 1;
+}
+fn chain26(x: i64) -> (result: i64) {
+    return chain25(x) + 1;
+}
+fn chain27(x: i64) -> (result: i64) {
+    return chain26(x) + 1;
+}
+fn chain28(x: i64) -> (result: i64) {
+    return chain27(x) + 1;
+}
+fn chain29(x: i64) -> (result: i64) {
+    return chain28(x) + 1;
+}
+fn chain30(x: i64) -> (result: i64) {
+    return chain29(x) + 1;
+}
+fn chain31(x: i64) -> (result: i64) {
+    return chain30(x) + 1;
+}
+fn chain32(x: i64) -> (result: i64) {
+    return chain31(x) + 1;
+}
+fn chain33(x: i64) -> (result: i64) {
+    return chain32(x) + 1;
+}
+fn chain34(x: i64) -> (result: i64) {
+    return chain33(x) + 1;
+}
+fn chain35(x: i64) -> (result: i64) {
+    return chain34(x) + 1;
+}
+fn chain36(x: i64) -> (result: i64) {
+    return chain35(x) + 1;
+}
+fn chain37(x: i64) -> (result: i64) {
+    return chain36(x) + 1;
+}
+fn chain38(x: i64) -> (result: i64) {
+    return chain37(x) + 1;
+}
+fn chain39(x: i64) -> (result: i64) {
+    return chain38(x) + 1;
+}
+fn chain40(x: i64) -> (result: i64) {
+    return chain39(x) + 1;
+}
+fn chain41(x: i64) -> (result: i64) {
+    return chain40(x) + 1;
+}
+fn chain42(x: i64) -> (result: i64) {
+    return chain41(x) + 1;
+}
+fn chain43(x: i64) -> (result: i64) {
+    return chain42(x) + 1;
+}
+fn chain44(x: i64) -> (result: i64) {
+    return chain43(x) + 1;
+}
+fn chain45(x: i64) -> (result: i64) {
+    return chain44(x) + 1;
+}
+fn chain46(x: i64) -> (result: i64) {
+    return chain45(x) + 1;
+}
+fn chain47(x: i64) -> (result: i64) {
+    return chain46(x) + 1;
+}
+fn chain48(x: i64) -> (result: i64) {
+    return chain47(x) + 1;
+}
+fn chain49(x: i64) -> (result: i64) {
+    return chain48(x) + 1;
+}
+fn chain50(x: i64) -> (result: i64) {
+    return chain49(x) + 1;
+}
+fn chain51(x: i64) -> (result: i64) {
+    return chain50(x) + 1;
+}
+fn chain52(x: i64) -> (result: i64) {
+    return chain51(x) + 1;
+}
+fn chain53(x: i64) -> (result: i64) {
+    return chain52(x) + 1;
+}
+fn chain54(x: i64) -> (result: i64) {
+    return chain53(x) + 1;
+}
+fn chain55(x: i64) -> (result: i64) {
+    return chain54(x) + 1;
+}
+fn chain56(x: i64) -> (result: i64) {
+    return chain55(x) + 1;
+}
+fn chain57(x: i64) -> (result: i64) {
+    return chain56(x) + 1;
+}
+fn chain58(x: i64) -> (result: i64) {
+    return chain57(x) + 1;
+}
+fn chain59(x: i64) -> (result: i64) {
+    return chain58(x) + 1;
+}
+fn chain60(x: i64) -> (result: i64) {
+    return chain59(x) + 1;
+}
+fn chain61(x: i64) -> (result: i64) {
+    return chain60(x) + 1;
+}
+fn chain62(x: i64) -> (result: i64) {
+    return chain61(x) + 1;
+}
+fn chain63(x: i64) -> (result: i64) {
+    return chain62(x) + 1;
+}
+fn chain64(x: i64) -> (result: i64) {
+    return chain63(x) + 1;
+}
+fn manyvalues(a: i64) -> (result: i64) {
+    let v0: i64 = a + 0;
+    let v1: i64 = v0 + 1;
+    let v2: i64 = v1 + 2;
+    let v3: i64 = v2 + 3;
+    let v4: i64 = v3 + 4;
+    let v5: i64 = v4 + 5;
+    let v6: i64 = v5 + 6;
+    let v7: i64 = v6 + 7;
+    let v8: i64 = v7 + 8;
+    let v9: i64 = v8 + 9;
+    let v10: i64 = v9 + 10;
+    let v11: i64 = v10 + 11;
+    let v12: i64 = v11 + 12;
+    let v13: i64 = v12 + 13;
+    let v14: i64 = v13 + 14;
+    let v15: i64 = v14 + 15;
+    let v16: i64 = v15 + 16;
+    let v17: i64 = v16 + 17;
+    let v18: i64 = v17 + 18;
+    let v19: i64 = v18 + 19;
+    let v20: i64 = v19 + 20;
+    let v21: i64 = v20 + 21;
+    let v22: i64 = v21 + 22;
+    let v23: i64 = v22 + 23;
+    let v24: i64 = v23 + 24;
+    let v25: i64 = v24 + 25;
+    let v26: i64 = v25 + 26;
+    let v27: i64 = v26 + 27;
+    let v28: i64 = v27 + 28;
+    let v29: i64 = v28 + 29;
+    let v30: i64 = v29 + 30;
+    let v31: i64 = v30 + 31;
+    let v32: i64 = v31 + 32;
+    let v33: i64 = v32 + 33;
+    let v34: i64 = v33 + 34;
+    let v35: i64 = v34 + 35;
+    let v36: i64 = v35 + 36;
+    let v37: i64 = v36 + 37;
+    let v38: i64 = v37 + 38;
+    let v39: i64 = v38 + 39;
+    return v39;
+}
+fn sum64(xs: [i64; 64]) -> (result: i64) {
+    iterate i over xs carrying acc: i64 = 0 {
+        next acc = acc + xs[i];
+    }
+    return acc;
+}

@@ -879,3 +879,69 @@ fn debug_contract_reports_its_shape() {
         "{unsupported:?}"
     );
 }
+
+#[test]
+fn debug_identities_are_derivation_stable() {
+    // Golden identities for a fixed scenario: performance work may
+    // change HOW identities derive, never WHAT they derive to.
+    // Historical witnesses stay comparable across VM versions.
+    let admitted = compile_corpus("arith.mncs");
+    let (instruction, _) = first_instruction(&admitted, "add2");
+    let caps = CapabilityEnv::empty();
+    let mut session = Session::open(&admitted);
+    let mut config = bounded_config();
+    config.stops.push(StopCondition {
+        id: "s".to_owned(),
+        target: StopTarget::Operation { instruction },
+    });
+    let started = session.start_debug(
+        &caps,
+        spec("mncs.vmcorpus.arith.v1", "add2", vec![i64_arg(3), i64_arg(4)]),
+        config,
+    );
+    let (mut live, stop) = match started {
+        DebugStart::Stopped(live, stop) => (live, stop),
+        DebugStart::Finished(_) => panic!("expected a stop"),
+    };
+    assert_eq!(
+        live.execution_id(),
+        "mncs:vm:execution:be70b9436eb70552ffaa1abe78cf5640ee9a0f85774713edf9aef19d81f4e0e8"
+    );
+    assert_eq!(
+        stop.transition_digest,
+        "sha256:d6836a52be08f295d91b8c470366e382ce3f361d987b906e05dd201c7b67a9c2"
+    );
+    assert_eq!(
+        stop.state_digest,
+        "sha256:802bee6f58f96c99360b892d220ab49b1e8047064f0cef70dfabadb32dd6245b"
+    );
+    let stack = live.inspect_stack(8, 32, 4096).expect("inspect");
+    let instances: Vec<&str> = stack.frames[0]
+        .values
+        .iter()
+        .map(|view| view.instance.as_str())
+        .collect();
+    assert_eq!(
+        instances,
+        [
+            "mncs:vm:value:151bf39dbbe637e2374c0a910514e60e53841503e2cc844d7a02037b39bce58e",
+            "mncs:vm:value:a229a31169985680db664182797c7a94286eb337955c55e3d2daaefaa1058349",
+        ]
+    );
+    let stream = live.inspect_observation();
+    let event_ids: Vec<(&str, &str)> = stream
+        .events
+        .iter()
+        .take(4)
+        .map(|event| (event.kind.as_str(), event.identity.0.as_str()))
+        .collect();
+    assert_eq!(
+        event_ids,
+        [
+            ("execution_enter", "mncs:vm:event:3124a32baefe"),
+            ("frame_enter", "mncs:vm:event:12370e7820e8"),
+            ("block_enter", "mncs:vm:event:76ff556776f7"),
+            ("operation_enter", "mncs:vm:event:b151e2dea353"),
+        ]
+    );
+}

@@ -93,15 +93,23 @@ impl Admitted {
 /// pressures/P-VM-ARTIFACT-007: frozen interchange needs a
 /// bignum-exact encoding owned by the artifact schema.
 pub fn admit(bytes: &[u8]) -> Result<Admitted, AdmissionRefusal> {
-    let raw: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|error| AdmissionRefusal::Malformed {
-            reason: format!("artifact JSON does not parse: {error}"),
-        })?;
-    let artifact: VmArtifact =
-        serde_json::from_value(raw).map_err(|error| AdmissionRefusal::Malformed {
-            reason: format!("artifact JSON does not decode: {error}"),
-        })?;
-    admit_artifact(artifact)
+    // Fast path: decode straight into the artifact (one JSON pass, no
+    // intermediate Value). Only failures fall back to the two-step
+    // diagnosis so refusal reasons stay exactly as before.
+    match serde_json::from_slice::<VmArtifact>(bytes) {
+        Ok(artifact) => admit_artifact(artifact),
+        Err(_) => {
+            let raw: serde_json::Value =
+                serde_json::from_slice(bytes).map_err(|error| AdmissionRefusal::Malformed {
+                    reason: format!("artifact JSON does not parse: {error}"),
+                })?;
+            let artifact: VmArtifact =
+                serde_json::from_value(raw).map_err(|error| AdmissionRefusal::Malformed {
+                    reason: format!("artifact JSON does not decode: {error}"),
+                })?;
+            admit_artifact(artifact)
+        }
+    }
 }
 
 /// Admit an already-parsed artifact value.
