@@ -1,5 +1,8 @@
 # mncs-vm
 
+<!-- MNCS:generated:begin -->
+<!-- MNCS:generated:end -->
+
 Canonical machine-native virtual machine and execution runtime for MNCS bytecode.
 
 > **Core thesis:** MNCS needs a native execution target whose runtime behavior preserves the language's explicit contracts, effects, capabilities, bounds, identity, and evidence instead of flattening them into an opaque host process.

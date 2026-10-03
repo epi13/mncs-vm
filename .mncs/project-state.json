@@ -1,0 +1,18 @@
+{
+  "schema_version": "mncs.project-intent/1",
+  "purpose": "Canonical machine-native virtual machine and execution runtime for MNCS bytecode: deterministic core execution preserving explicit contracts, effects, capabilities, bounds, identity, and evidence.",
+  "entry": [
+    "cargo test --offline",
+    "python3 scripts/run_tests.py"
+  ],
+  "milestones": [
+    {
+      "id": "mncs-vm:projection-conformance",
+      "title": "Declared ambient projection surfaces satisfy their contract",
+      "subject_slot": "declarations",
+      "evidence": "projection-conformance",
+      "dependencies": [],
+      "blockers": []
+    }
+  ]
+}

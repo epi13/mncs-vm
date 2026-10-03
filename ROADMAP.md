@@ -1,5 +1,8 @@
 # mncs-vm Roadmap
 
+<!-- MNCS:generated:begin -->
+<!-- MNCS:generated:end -->
+
 This roadmap describes the path from an empty repository to the canonical MNCS-native virtual machine. It is intentionally capability-oriented rather than version-oriented.
 
 The project should evolve one implementation forward. Milestones are checkpoints in that implementation, not frozen product generations.
