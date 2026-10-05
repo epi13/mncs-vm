@@ -17,6 +17,7 @@ Declared capabilities (declarations do not establish execution health):
 
 - `vm-admission/1` — execution-runtime-provider (experimental)
 - `vm-artifact/0.1.0` — execution-runtime (experimental)
+- `vm-build/1` — build-provider (experimental)
 - `vm-call/1` — execution-runtime-provider (experimental)
 - `vm-runtime/1` — execution-runtime-provider (experimental)
 

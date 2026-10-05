@@ -110,6 +110,39 @@
       "kind": "execution-runtime-provider",
       "stability": "experimental",
       "version": "1"
+    },
+    {
+      "artifact_contract": {
+        "receipt_schema": "mncs.vm-build-receipt/1",
+        "runtime_schema": "mncs.vm.runtime-provider/1"
+      },
+      "contract": "vm-build",
+      "effects": [
+        "write"
+      ],
+      "fingerprint_sources": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "build.rs",
+        "src/",
+        "python/mncs_vm_client/",
+        "tools/provider.py"
+      ],
+      "invocation": {
+        "fixed_argv": [
+          "build"
+        ],
+        "kind": "python",
+        "path": "tools/provider.py",
+        "toolchain": {
+          "path": "target/debug/mncs-vm",
+          "repository": "mncs-vm"
+        },
+        "toolchain_env": "MNCS_VM_BIN"
+      },
+      "kind": "build-provider",
+      "stability": "experimental",
+      "version": "1"
     }
   ],
   "dependencies": [],
@@ -120,6 +153,6 @@
   "purpose": "Canonical machine-native virtual machine and execution runtime for MNCS bytecode: deterministic core execution preserving explicit contracts, effects, capabilities, bounds, identity, and evidence.",
   "repository": "mncs-vm",
   "schema_version": "mncs.project-view/1",
-  "source_identity": "sha256:2e395376479caf031278cc030b90da444b8ab6529566bf9c046c923db7a7c92e",
+  "source_identity": "sha256:9a1fa9bee8afa3cc6c6b9f863ece4fe27a602e0b8202c1274f960d929a96cea1",
   "structure": {}
 }
