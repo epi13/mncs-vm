@@ -97,6 +97,7 @@ fn compare(corpus: &str, module: &str, function: &str, args: Vec<mncs_model::Exe
                 name: function.to_owned(),
             },
             arguments: args,
+            type_arguments: Vec::new(),
             envelope: envelope(),
         },
     );

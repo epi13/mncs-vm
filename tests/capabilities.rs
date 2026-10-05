@@ -116,6 +116,7 @@ fn host_call_mediation() {
     let spec = || CallSpec {
         target: target.clone(),
         arguments: Vec::new(),
+        type_arguments: Vec::new(),
         envelope: envelope(),
     };
     let mut denied_session = Session::open(&admitted);

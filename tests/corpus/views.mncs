@@ -1,0 +1,77 @@
+mncs 0.18;
+
+module mncs.vmcorpus.views.v1;
+
+fn span_len(text: [byte; 8], start: u64, end: u64) -> (result: u64) {
+    iterate i over text[start..end] carrying n: u64 = 0 {
+        next n = n + 1;
+    }
+    return n;
+}
+
+fn bump(x: u64) -> (result: u64) {
+    return x + 1;
+}
+
+fn attempt_sum() -> (result: u64) {
+    iterate i up_to 8 carrying acc: u64 = 0 {
+        next acc = bump(acc);
+    }
+    return acc;
+}
+
+fn attempt_one() -> (result: u64) {
+    iterate i up_to 1 carrying acc: u64 = 0 {
+        next acc = bump(acc);
+    }
+    return acc;
+}
+
+fn attempt_plain() -> (result: u64) {
+    iterate i up_to 8 carrying acc: u64 = 0 {
+        next acc = acc + 1;
+    }
+    return acc;
+}
+
+fn attempt_branch() -> (result: u64) {
+    iterate i up_to 8 carrying acc: u64 = 0 {
+        let doubled: u64 = acc + acc;
+        if doubled > 100 {
+            return doubled;
+        }
+        next acc = acc + 1;
+    }
+    return acc;
+}
+
+fn inner_passes(n: u64) -> (result: u64) {
+    iterate j up_to 8 carrying acc: u64 = 0 {
+        next acc = acc + n;
+    }
+    return acc;
+}
+
+fn nested_sum() -> (result: u64) {
+    iterate i up_to 4 carrying acc: u64 = 0 {
+        next acc = acc + inner_passes(1);
+    }
+    return acc;
+}
+
+fn nested_inline() -> (result: u64) {
+    iterate i up_to 4 carrying acc: u64 = 0 {
+        iterate j up_to 8 carrying m: u64 = 0 {
+            next m = m + 1;
+        }
+        next acc = acc + m;
+    }
+    return acc;
+}
+
+fn carry_blob(text: [byte; 1024]) -> (result: u64) {
+    iterate i up_to 100 carrying buf: [byte; 1024] = text {
+        next buf = buf;
+    }
+    return 100;
+}

@@ -75,6 +75,166 @@ fn run_executes_oneshot() {
 }
 
 #[test]
+fn run_with_type_args_executes_generic() {
+    // Seeded bytes via the in-process harness: the CLI only ever sees
+    // frozen artifact JSON plus JSON argument files.
+    let source = std::fs::read_to_string(corpus("generic.mncs")).unwrap();
+    let seeds = vec![mncs_model::HostGenericSeedRequest {
+        module: "mncs.vmcorpus.generic.v1".to_owned(),
+        function: "first".to_owned(),
+        type_arguments: vec![mncs_model::ExecutionTypeArgument::Nat { value: 4 }],
+    }];
+    let (_, backend) = mncs_vm::harness::compile_to_backend_seeded(&source, "generic.mncs", &seeds)
+        .expect("seeded compile");
+    let admitted = mncs_vm::migrate::admit_research_artifact(&backend).expect("admit");
+    assert_eq!(admitted.artifact.generic_entrypoints.len(), 1);
+    let stamp = std::process::id();
+    let artifact_path = std::env::temp_dir().join(format!("mncs-vm-cli-generic-{stamp}.json"));
+    let args_path = std::env::temp_dir().join(format!("mncs-vm-cli-generic-args-{stamp}.json"));
+    let targs_path = std::env::temp_dir().join(format!("mncs-vm-cli-generic-targs-{stamp}.json"));
+    std::fs::write(
+        &artifact_path,
+        serde_json::to_vec(&admitted.artifact).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        &args_path,
+        serde_json::to_string(&vec![serde_json::json!({"sequence": {"values": [
+            int_arg(11),
+            int_arg(22),
+        ]}})])
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(&targs_path, r#"[{"kind": "nat", "value": 4}]"#).unwrap();
+    let output = Command::new(bin())
+        .args([
+            "run",
+            "--artifact",
+            artifact_path.to_str().unwrap(),
+            "--callable",
+            "mncs.vmcorpus.generic.v1::first",
+            "--args",
+            args_path.to_str().unwrap(),
+            "--type-args",
+            targs_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn mncs-vm run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["outcome"]["kind"], "completed");
+    assert_eq!(document["record"]["returned"][0]["Integer"]["value"], 11);
+    assert!(document["record"]["callable_name"]
+        .as_str()
+        .unwrap()
+        .starts_with("mncs.vmcorpus.generic.v1::first<"));
+    // Uncompiled instantiation is a structured refusal, not a crash.
+    std::fs::write(&targs_path, r#"[{"kind": "nat", "value": 5}]"#).unwrap();
+    let output = Command::new(bin())
+        .args([
+            "run",
+            "--artifact",
+            artifact_path.to_str().unwrap(),
+            "--callable",
+            "mncs.vmcorpus.generic.v1::first",
+            "--args",
+            args_path.to_str().unwrap(),
+            "--type-args",
+            targs_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn mncs-vm run");
+    let _ = std::fs::remove_file(&artifact_path);
+    let _ = std::fs::remove_file(&args_path);
+    let _ = std::fs::remove_file(&targs_path);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["outcome"]["kind"], "invalid_request");
+    assert!(document["outcome"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("no compiled specialization"));
+}
+
+#[test]
+fn batch_executes_many_calls_with_summary() {
+    let stamp = std::process::id();
+    let artifact_path =
+        std::env::temp_dir().join(format!("mncs-vm-cli-batch-{stamp}.json"));
+    let compile = Command::new(bin())
+        .args([
+            "compile",
+            &corpus("arith.mncs"),
+            "--output",
+            artifact_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn mncs-vm compile");
+    assert!(
+        compile.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let calls_path =
+        std::env::temp_dir().join(format!("mncs-vm-cli-batch-calls-{stamp}.json"));
+    let output_path =
+        std::env::temp_dir().join(format!("mncs-vm-cli-batch-out-{stamp}.json"));
+    std::fs::write(
+        &calls_path,
+        serde_json::to_string(&serde_json::json!([
+            {"id": "add", "callable": "mncs.vmcorpus.arith.v1::add2",
+             "args": [int_arg(3), int_arg(4)]},
+            {"id": "mul", "callable": "mncs.vmcorpus.arith.v1::muladd",
+             "args": [int_arg(2), int_arg(3), int_arg(4)]},
+            {"id": "bogus", "callable": "mncs.vmcorpus.arith.v1::missing",
+             "args": []},
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = Command::new(bin())
+        .args([
+            "batch",
+            "--artifact",
+            artifact_path.to_str().unwrap(),
+            "--calls",
+            calls_path.to_str().unwrap(),
+            "--output",
+            output_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn mncs-vm batch");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&output_path).unwrap()).unwrap();
+    let _ = std::fs::remove_file(&artifact_path);
+    let _ = std::fs::remove_file(&calls_path);
+    let _ = std::fs::remove_file(&output_path);
+    assert_eq!(document["summary"]["calls"], 3);
+    assert_eq!(document["summary"]["outcomes"]["completed"], 2);
+    assert_eq!(document["summary"]["outcomes"]["invalid_request"], 1);
+    assert!(document["summary"]["steps_total"].as_u64().unwrap() > 0);
+    let results = document["results"].as_array().unwrap();
+    assert_eq!(results[0]["id"], "add");
+    assert_eq!(results[0]["record"]["returned"][0]["Integer"]["value"], 7);
+    assert_eq!(results[1]["record"]["returned"][0]["Integer"]["value"], 10);
+    assert_eq!(results[2]["outcome"]["kind"], "invalid_request");
+}
+
+#[test]
 fn run_with_observe_retains_stream() {
     let policy_path = std::env::temp_dir().join(format!("mncs-vm-cli-policy-{}.json", std::process::id()));
     std::fs::write(

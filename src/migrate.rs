@@ -18,13 +18,31 @@
 //! `mncs.vm.artifact/1` directly (pressure P-VM-COMPILER-001).
 //! The adapter never synthesizes semantics: anything it cannot
 //! translate is a refusal, never a guess.
+//!
+//! Explicit removal path, now that direct emission exists
+//! (`mncs-compiler/tools/stage0-probe/src/vm_emit.rs`,
+//! `tools/test_vm_emit.py`):
+//!
+//! 1. Keep this adapter as the research-path consumer while the
+//!    in-process differential tests (`differential.rs`,
+//!    `compiler_source.rs`, `generics.rs`) prove VM/oracle
+//!    agreement on research bytes.
+//! 2. Port those differentials to direct bytes once a real compiler
+//!    suite runs green on direct emission (no behavior change: the
+//!    emitter mirrors this translation row for row).
+//! 3. Delete this module plus `ResearchPayload`, and remove the
+//!    research-backend link from `harness.rs` (leaving `compile_*`
+//!    only where tests still need an oracle compilation).
+//!
+//! Do not extend this adapter for new features: new lowering
+//! behavior belongs in the direct emitter.
 
 use mncs_model::BackendArtifact;
 
 use crate::admit::{AdmissionRefusal, Admitted};
 use crate::artifact::{
-    ArtifactRequirements, ArtifactSource, BoundDecl, CallableEntry, CodeSection, VmArtifact,
-    ARTIFACT_SCHEMA_VERSION, VM_CONTRACT,
+    ArtifactRequirements, ArtifactSource, BoundDecl, CallableEntry, CodeSection, GenericEntrypoint,
+    VmArtifact, ARTIFACT_SCHEMA_VERSION, VM_CONTRACT,
 };
 
 /// Upstream identifiers this adapter accepts.
@@ -87,6 +105,39 @@ pub fn translate_research_artifact(
             None => unsupported.push(format!("export {name}: no ssa instance")),
         }
     }
+    // Compiler-determined generic instantiations: each upstream row
+    // already names the concrete (module, function) the backend
+    // emitted, so the adapter only binds it to the SSA instance
+    // identity execution uses. Unresolvable rows are recorded, never
+    // guessed, mirroring uninstantiated exports.
+    let mut generic_entrypoints = Vec::with_capacity(backend.generic_entrypoints.len());
+    for row in &backend.generic_entrypoints {
+        match resolve_generic_entry(&payload, row)? {
+            Some(entry) => generic_entrypoints.push(entry),
+            None => unsupported.push(format!(
+                "generic {}::{}({}): no ssa instance",
+                row.generic_module,
+                row.generic_function,
+                row.args_spellings.join(", ")
+            )),
+        }
+    }
+    generic_entrypoints.sort_by(|left: &GenericEntrypoint, right: &GenericEntrypoint| {
+        (
+            &left.generic_module,
+            &left.generic_function,
+            &left.args_spellings,
+            &left.canonical_args,
+            &left.function,
+        )
+            .cmp(&(
+                &right.generic_module,
+                &right.generic_function,
+                &right.args_spellings,
+                &right.canonical_args,
+                &right.function,
+            ))
+    });
     let mut capabilities: Vec<String> = payload
         .ssa
         .functions
@@ -125,6 +176,7 @@ pub fn translate_research_artifact(
             interface_identity: backend.interface_identity.clone(),
         },
         callables,
+        generic_entrypoints,
         code: CodeSection::MncsSelectedSsa {
             ssa_schema: payload.ssa.schema_version.clone(),
             module: payload.ssa,
@@ -219,6 +271,41 @@ fn resolve_export(
         0 => Ok(None),
         _ => Err(AdmissionRefusal::UnresolvedFact {
             fact: format!("export {name} is ambiguous across functions"),
+        }),
+    }
+}
+
+/// Bind one upstream generic-instantiation row to its SSA instance.
+///
+/// The compiler already selected the concrete entry; this only
+/// resolves it through the same public identity derivation the
+/// export path uses. Ambiguity is a refusal; a missing instance
+/// resolves to `None` for explicit recording.
+fn resolve_generic_entry(
+    payload: &ResearchPayload,
+    row: &mncs_model::GenericEntrypointRecord,
+) -> Result<Option<GenericEntrypoint>, AdmissionRefusal> {
+    let id = mncs_model::function_id(&row.entry_module, &row.entry_function);
+    let mut candidates = Vec::new();
+    for function in &payload.ssa.functions {
+        if function.semantic_identity == id {
+            candidates.push(function.identity.0.clone());
+        }
+    }
+    match candidates.len() {
+        1 => Ok(Some(GenericEntrypoint {
+            generic_module: row.generic_module.clone(),
+            generic_function: row.generic_function.clone(),
+            args_spellings: row.args_spellings.clone(),
+            canonical_args: row.canonical_args.clone(),
+            function: candidates.pop().unwrap_or_default(),
+        })),
+        0 => Ok(None),
+        _ => Err(AdmissionRefusal::UnresolvedFact {
+            fact: format!(
+                "generic {}::{} entry {}::{} is ambiguous across ssa instances",
+                row.generic_module, row.generic_function, row.entry_module, row.entry_function
+            ),
         }),
     }
 }

@@ -68,6 +68,7 @@ fn run(
                 name: function.to_owned(),
             },
             arguments: args,
+            type_arguments: Vec::new(),
             envelope: envelope(),
         },
     )

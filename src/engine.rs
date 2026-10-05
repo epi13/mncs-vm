@@ -16,9 +16,9 @@
 //! BooleanNot, ByteBitwise, ByteShift, ByteCompare, Select (scalar),
 //! RecordConstruct, RecordProject, FiniteConstruct,
 //! FinitePayloadProject, FiniteIsVariant, SequenceConstruct,
-//! SequenceProject, SequenceLength, SequenceReplace, BoundCheck,
-//! Convert (integer/boolean/byte totals), Call, Effect (recorded),
-//! HostCall (provider-dispatched), Return, Branch,
+//! SequenceProject, SequenceLength, SequenceReplace, ViewConstruct,
+//! BoundCheck, Convert (integer/boolean/byte totals), Call, Effect
+//! (recorded), HostCall (provider-dispatched), Return, Branch,
 //! ConditionalBranch, Failure. RuntimeCheck is Unsupported upstream
 //! as well, so agreement there is exact.
 
@@ -226,10 +226,21 @@ impl<'a> Engine<'a> {
                 (parts, Ok(()))
             }
             Err(outcome) => {
+                let partial = Self::frame_cells(&parts.frame);
+                parts.state.usage.release_cells(partial);
                 parts.state.usage.exit_call();
                 (parts, Err(outcome))
             }
         }
+    }
+
+    /// Live value cells held by one frame (saturating).
+    fn frame_cells(frame: &Frame) -> u64 {
+        frame
+            .values
+            .values()
+            .map(Value::cells)
+            .fold(0, u64::saturating_add)
     }
 
     /// Bind entry arguments to function inputs by position with arity
@@ -309,6 +320,11 @@ impl<'a> Engine<'a> {
         }
         for (identity, value) in bound {
             let cells = value.cells();
+            // Rebinding drops the previous value: release its cells
+            // so accounting tracks live values, not history.
+            if let Some(old) = frame.values.remove(&identity) {
+                state.usage.release_cells(old.cells());
+            }
             state.usage.note_cells(cells, &self.envelope)?;
             frame.values.insert(identity, value);
         }
@@ -327,6 +343,10 @@ impl<'a> Engine<'a> {
         parts: &mut LiveParts,
         mut dbg: Option<&mut DebugDriver>,
     ) -> DriveExit {
+        // Set when a callee return resumes the caller mid-block: the
+        // block was already entered, so the next loop pass must not
+        // run entry accounting (or eventing) for it again.
+        let mut resumed_mid_block = false;
         loop {
             let function_index = parts.frame.function;
             let block_id = parts.frame.block.clone();
@@ -343,10 +363,14 @@ impl<'a> Engine<'a> {
             // A function-entry suspension already ran block entry for
             // the callee entry block; the resumed loop skips it once
             // so iteration accounting and events run exactly once.
+            // A callee return likewise resumes mid-block: entry
+            // accounting must not run again for the resumed block.
             let prefetched = dbg
                 .as_deref_mut()
                 .is_some_and(|driver| driver.take_block_prefetched());
-            if !prefetched {
+            let skip_entry = prefetched || resumed_mid_block;
+            resumed_mid_block = false;
+            if !skip_entry {
                 if let Err(outcome) =
                     self.enter_block(&mut parts.frame, function_index, &block_id)
                 {
@@ -564,6 +588,10 @@ impl<'a> Engine<'a> {
                         };
                         driver.note_return(parts.frame.seq, &returned, "returned");
                     }
+                    // The callee frame dies here: release its held
+                    // cells so accounting tracks live values.
+                    let dead = Self::frame_cells(&parts.frame);
+                    parts.state.usage.release_cells(dead);
                     parts.frame = caller.frame;
                     // The call instruction sits at the restored ip;
                     // capture it before advancing past the call.
@@ -584,6 +612,9 @@ impl<'a> Engine<'a> {
                             parts.frame.values.insert(output, value);
                         }
                     }
+                    // Resuming the caller mid-block: skip entry
+                    // accounting once at the loop top.
+                    resumed_mid_block = true;
                     if let Some(driver) = dbg.as_deref_mut() {
                         // The call's result lands now: emit its
                         // operation_result so every operation_enter
@@ -729,12 +760,14 @@ impl<'a> Engine<'a> {
         }))
     }
 
-    /// Region iteration accounting on block entry. Every entry into a
-    /// region body block is one executed iteration; past the declared
-    /// bound the run ends with BudgetExhausted. This is how
-    /// compiler-visible iteration bounds survive into execution, even
-    /// though valid compiler output never exceeds them (the check is
-    /// defense in depth, plus enforcement for hand-built artifacts).
+    /// Region iteration accounting on block entry. Entering a
+    /// region's body entry starts one executed pass; past the
+    /// declared bound the run ends with BudgetExhausted. A new pass
+    /// restarts every strictly nested loop, so each loop activation
+    /// gets its own bound. This is how compiler-visible iteration
+    /// bounds survive into execution, even though valid compiler
+    /// output never exceeds them (the check is defense in depth,
+    /// plus enforcement for hand-built artifacts).
     fn enter_block(
         &self,
         frame: &mut Frame,
@@ -743,8 +776,26 @@ impl<'a> Engine<'a> {
     ) -> Result<(), Outcome> {
         let function = &self.module.functions[function_index];
         for region in &function.bounded_iterations {
-            if !region.body_blocks.iter().any(|b| b.0 == block_id) {
+            if region.body_entry.0 != block_id {
                 continue;
+            }
+            // A new pass of this region restarts every strictly
+            // nested loop: each activation gets the full declared
+            // bound instead of inheriting a sibling pass's count.
+            let nested: Vec<String> = function
+                .bounded_iterations
+                .iter()
+                .filter(|other| {
+                    other.identity != region.identity
+                        && region
+                            .body_blocks
+                            .iter()
+                            .any(|body| body.0 == other.body_entry.0)
+                })
+                .map(|other| other.identity.0.clone())
+                .collect();
+            for identity in nested {
+                frame.iters.remove(&identity);
             }
             let count = frame.iters.entry(region.identity.0.clone()).or_insert(0);
             *count += 1;
@@ -1268,6 +1319,43 @@ impl<'a> Engine<'a> {
                 );
                 Step::Continue
             }
+            SsaInstructionKind::ViewConstruct { view_bound, .. } => {
+                let mncs_model::SequenceBound::UpTo(capacity) = view_bound else {
+                    return invalid(
+                        "view construction must produce an UpTo-bounded view".to_owned(),
+                    );
+                };
+                if instruction.inputs.len() != 3 {
+                    return invalid("view construction requires source and range".to_owned());
+                }
+                let source = frame.values.get(&instruction.inputs[0].0).cloned();
+                let start = frame.values.get(&instruction.inputs[1].0).cloned();
+                let end = frame.values.get(&instruction.inputs[2].0).cloned();
+                let (
+                    Some(Value::Sequence { elements }),
+                    Some(Value::Integer { value: start, .. }),
+                    Some(Value::Integer { value: end, .. }),
+                ) = (source, start, end)
+                else {
+                    return invalid("view construction operands were mistyped".to_owned());
+                };
+                if start < 0 || end < 0 || end < start {
+                    return halt_program("view range is not a valid half-open range");
+                }
+                if end > elements.len() as i128 {
+                    return halt_program("view range end exceeds the source length");
+                }
+                if (end - start) > *capacity as i128 {
+                    return halt_program("view range exceeds the declared view capacity");
+                }
+                emit(
+                    frame,
+                    Value::Sequence {
+                        elements: Arc::new(elements[start as usize..end as usize].to_vec()),
+                    },
+                );
+                Step::Continue
+            }
             SsaInstructionKind::SequenceReplace { bound, .. } => {
                 if instruction.inputs.len() != 3 {
                     return invalid("sequence replace requires three operands".to_owned());
@@ -1401,6 +1489,8 @@ impl<'a> Engine<'a> {
                         Step::Jump(entry_block)
                     }
                     Err(outcome) => {
+                        let partial = Self::frame_cells(frame);
+                        state.usage.release_cells(partial);
                         state.usage.exit_call();
                         *frame = caller.frame;
                         Step::Halt(outcome)
