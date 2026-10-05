@@ -56,6 +56,9 @@ pub struct Admitted {
     pub by_function: BTreeMap<String, usize>,
     /// SSA function index by function identity.
     pub ssa_functions: BTreeMap<String, usize>,
+    /// (generic module, generic name, normalized spellings) ->
+    /// generic-entrypoint index. Generic calls bind here.
+    pub generic_entries: BTreeMap<(String, String, Vec<String>), usize>,
 }
 
 impl Admitted {
@@ -71,6 +74,37 @@ impl Admitted {
 
     pub fn callable_by_function(&self, function: &str) -> Option<usize> {
         self.by_function.get(function).copied()
+    }
+
+    pub fn generic_entry(&self, module: &str, name: &str, spellings: &[String]) -> Option<usize> {
+        self.generic_entries
+            .get(&(module.to_owned(), name.to_owned(), spellings.to_vec()))
+            .copied()
+    }
+
+    /// Whether the artifact realizes any instantiation of a generic
+    /// function, for precise call-boundary refusals.
+    pub fn has_generic(&self, module: &str, name: &str) -> bool {
+        self.generic_entries
+            .keys()
+            .any(|(generic_module, generic_function, _)| {
+                generic_module == module && generic_function == name
+            })
+    }
+
+    /// Normalized spellings of every realized instantiation of a
+    /// generic function, for refusal diagnostics.
+    pub fn generic_spellings(&self, module: &str, name: &str) -> Vec<Vec<String>> {
+        let mut spellings: Vec<Vec<String>> = self
+            .generic_entries
+            .keys()
+            .filter(|(generic_module, generic_function, _)| {
+                generic_module == module && generic_function == name
+            })
+            .map(|(_, _, row)| row.clone())
+            .collect();
+        spellings.sort();
+        spellings
     }
 
     /// Borrow the admitted SSA module. Fails closed when the code
@@ -230,10 +264,76 @@ pub fn admit_artifact(artifact: VmArtifact) -> Result<Admitted, AdmissionRefusal
         }
         by_name.insert((callable.module.clone(), callable.name.clone()), index);
     }
+    let mut generic_entries = BTreeMap::new();
+    for (index, entry) in artifact.generic_entrypoints.iter().enumerate() {
+        if entry.generic_module.trim().is_empty() || entry.generic_function.trim().is_empty() {
+            return Err(AdmissionRefusal::Malformed {
+                reason: "generic entrypoint with empty module/name".to_owned(),
+            });
+        }
+        if entry.args_spellings.is_empty()
+            || entry
+                .args_spellings
+                .iter()
+                .any(|spelling| spelling.trim().is_empty())
+        {
+            return Err(AdmissionRefusal::Malformed {
+                reason: format!(
+                    "generic entrypoint {}::{} has no argument spellings",
+                    entry.generic_module, entry.generic_function
+                ),
+            });
+        }
+        if entry.canonical_args.trim().is_empty() {
+            return Err(AdmissionRefusal::Malformed {
+                reason: format!(
+                    "generic entrypoint {}::{} has no specialization identity",
+                    entry.generic_module, entry.generic_function
+                ),
+            });
+        }
+        if entry.function.trim().is_empty() {
+            return Err(AdmissionRefusal::UnresolvedFact {
+                fact: format!(
+                    "generic entrypoint {}::{} has no function identity",
+                    entry.generic_module, entry.generic_function
+                ),
+            });
+        }
+        if !ssa_functions.contains_key(&entry.function) {
+            return Err(AdmissionRefusal::UnresolvedFact {
+                fact: format!(
+                    "generic entrypoint {}::{} names unknown function {}",
+                    entry.generic_module, entry.generic_function, entry.function
+                ),
+            });
+        }
+        if generic_entries
+            .insert(
+                (
+                    entry.generic_module.clone(),
+                    entry.generic_function.clone(),
+                    entry.args_spellings.clone(),
+                ),
+                index,
+            )
+            .is_some()
+        {
+            return Err(AdmissionRefusal::Malformed {
+                reason: format!(
+                    "duplicate generic entrypoint {}::{}({})",
+                    entry.generic_module,
+                    entry.generic_function,
+                    entry.args_spellings.join(", ")
+                ),
+            });
+        }
+    }
     Ok(Admitted {
         artifact,
         by_name,
         by_function,
         ssa_functions,
+        generic_entries,
     })
 }

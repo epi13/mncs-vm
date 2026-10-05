@@ -179,6 +179,7 @@ fn cmd_run(argv: &[String]) -> i32 {
         let spec = CallSpec {
             target,
             arguments,
+            type_arguments: Vec::new(),
             envelope,
         };
         match session.start_debug(&caps, spec, config) {
@@ -199,6 +200,7 @@ fn cmd_run(argv: &[String]) -> i32 {
         let spec = CallSpec {
             target,
             arguments,
+            type_arguments: Vec::new(),
             envelope,
         };
         let (outcome, record) = session.call(&caps, spec);
@@ -588,7 +590,16 @@ impl DebugHandler {
             .get("include_stream")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
-        match session.start_debug(caps, CallSpec { target, arguments, envelope }, config) {
+        match session.start_debug(
+            caps,
+            CallSpec {
+                target,
+                arguments,
+                type_arguments: Vec::new(),
+                envelope,
+            },
+            config,
+        ) {
             DebugStart::Stopped(live, stop) => {
                 self.live = Some(live);
                 ok_response(id, serde_json::json!({"event": "stopped", "stop": stop}))

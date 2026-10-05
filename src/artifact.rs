@@ -43,6 +43,29 @@ pub struct CallableEntry {
     pub semantic: Option<String>,
 }
 
+/// One compiled generic instantiation the artifact realizes.
+///
+/// The compiler determined all of this at lowering time: the VM
+/// resolves a call's normalized type-argument spellings to exactly
+/// one row and executes its frozen `function` target. No inference,
+/// no guessing; an unmatched request is a refusal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenericEntrypoint {
+    /// Source-level module path of the generic function.
+    pub generic_module: String,
+    /// Source-level name of the generic function.
+    pub generic_function: String,
+    /// Normalized host spellings addressing this instantiation
+    /// (`ExecutionTypeArgument::normalized_spelling`, positional).
+    pub args_spellings: Vec<String>,
+    /// Deterministic specialization identity shared with the
+    /// in-language instantiation of the same arguments.
+    pub canonical_args: String,
+    /// Stable SSA function identity of the compiled instantiation.
+    /// This is what execution binds to.
+    pub function: String,
+}
+
 /// Executable code section. v1 carries the compiler-selected SSA the
 /// artifact was lowered from; the engine executes SSA semantics under
 /// VM-owned runtime rules (frames, metering, capabilities, outcomes).
@@ -81,6 +104,10 @@ pub struct VmArtifact {
     pub artifact_id: String,
     pub source: ArtifactSource,
     pub callables: Vec<CallableEntry>,
+    // Omitted when empty so generic-free artifacts keep byte-identical
+    // canonical form (and identity) across this schema extension.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub generic_entrypoints: Vec<GenericEntrypoint>,
     pub code: CodeSection,
     pub requirements: ArtifactRequirements,
     #[serde(default)]

@@ -45,6 +45,7 @@ fn run_with(
                 name: function.to_owned(),
             },
             arguments: args,
+            type_arguments: Vec::new(),
             envelope: ResourceEnvelope { limits },
         },
     );
@@ -139,6 +140,7 @@ fn iteration_envelope_caps_loops() {
                 name: "sum8".to_owned(),
             },
             arguments: vec![seq_arg(&[1, 2, 3, 4, 5, 6, 7, 8])],
+            type_arguments: Vec::new(),
             envelope: ResourceEnvelope {
                 limits: vec![
                     ResourceLimit {

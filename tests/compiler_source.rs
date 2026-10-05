@@ -7,9 +7,9 @@
 //! `execute_ssa` oracle and the VM engine; agreement plus concrete
 //! expected values is the Phase-3 consumer proof.
 //!
-//! Only non-generic callables are exercised: session calls do not
-//! carry type arguments yet (recorded gap for `byte_at<N>` and the
-//! other generic source helpers).
+//! Only non-generic callables are exercised here; generic helpers
+//! (`byte_at<N>`, `ascii<N>`) are covered by `tests/generics.rs`
+//! through the type-argument call boundary.
 
 use mncs_vm::capability::CapabilityEnv;
 use mncs_vm::engine::CallTarget;
@@ -103,6 +103,7 @@ fn compare(
                 name: function.to_owned(),
             },
             arguments: args,
+            type_arguments: Vec::new(),
             envelope: envelope(),
         },
     );

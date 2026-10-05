@@ -19,9 +19,114 @@ pub struct CallSpec {
     pub target: CallTarget,
     /// Upstream wire arguments, marshalled at the boundary.
     pub arguments: Vec<mncs_model::ExecutionValue>,
+    /// Explicit generic/type arguments selecting one compiled
+    /// instantiation. Empty for concrete callables. The VM resolves
+    /// these through the artifact's compiler-determined entrypoint
+    /// table only; it never infers an instantiation.
+    pub type_arguments: Vec<mncs_model::ExecutionTypeArgument>,
     /// Caller-supplied envelope; the tighter limit wins per dimension
     /// against artifact-declared bounds.
     pub envelope: ResourceEnvelope,
+}
+
+/// A resolved call: the frozen function identity to execute plus the
+/// display name recorded in evidence.
+struct ResolvedCall {
+    function: String,
+    name: String,
+}
+
+/// Resolve a call target plus explicit type arguments to one frozen
+/// function identity. Pure table lookup over admitted content:
+///
+/// - concrete targets with no arguments bind the callable table;
+/// - generic targets with arguments bind the entrypoint row whose
+///   normalized spellings match exactly;
+/// - everything else is an explicit refusal reason, never a guess.
+///
+/// Normalization reuses the upstream
+/// `mncs_model::ExecutionTypeArgument::normalized_spelling` so VM
+/// resolution agrees byte-for-byte with backend-session resolution.
+fn resolve_call(
+    admitted: &Admitted,
+    target: &CallTarget,
+    type_arguments: &[mncs_model::ExecutionTypeArgument],
+) -> Result<ResolvedCall, String> {
+    match target {
+        CallTarget::ByFunction { function } => {
+            if !type_arguments.is_empty() {
+                return Err(format!(
+                    "type arguments supplied for concrete function target {function:?}"
+                ));
+            }
+            match admitted.callable_by_function(function) {
+                Some(index) => {
+                    let entry = &admitted.artifact.callables[index];
+                    Ok(ResolvedCall {
+                        function: entry.function.clone(),
+                        name: format!("{}::{}", entry.module, entry.name),
+                    })
+                }
+                None => Err("unknown callable".to_owned()),
+            }
+        }
+        CallTarget::ByName { module, name } => {
+            if type_arguments.is_empty() {
+                return match admitted.callable_by_name(module, name) {
+                    Some(index) => {
+                        let entry = &admitted.artifact.callables[index];
+                        Ok(ResolvedCall {
+                            function: entry.function.clone(),
+                            name: format!("{}::{}", entry.module, entry.name),
+                        })
+                    }
+                    None if admitted.has_generic(module, name) => Err(format!(
+                        "generic function {module}::{name} requires explicit type_arguments selecting a compiled instantiation"
+                    )),
+                    None => Err("unknown callable".to_owned()),
+                };
+            }
+            if admitted.callable_by_name(module, name).is_some() {
+                return Err(format!(
+                    "generic arguments supplied for non-generic function {module}::{name}"
+                ));
+            }
+            let spellings: Vec<String> = type_arguments
+                .iter()
+                .map(|argument| argument.normalized_spelling())
+                .collect();
+            match admitted.generic_entry(module, name, &spellings) {
+                Some(index) => {
+                    let entry = &admitted.artifact.generic_entrypoints[index];
+                    Ok(ResolvedCall {
+                        function: entry.function.clone(),
+                        name: format!(
+                            "{}::{}<{}>",
+                            entry.generic_module, entry.generic_function, entry.canonical_args
+                        ),
+                    })
+                }
+                None => {
+                    let available = admitted.generic_spellings(module, name);
+                    if available.is_empty() {
+                        Err(format!(
+                            "no compiled generic instantiation of {module}::{name} matches this artifact: name the instantiation in the corpus so elaboration compiles it in"
+                        ))
+                    } else {
+                        let rendered: Vec<String> = available
+                            .iter()
+                            .map(|row| format!("({})", row.join(", ")))
+                            .collect();
+                        Err(format!(
+                            "no compiled specialization of generic function {module}::{name} for arguments ({}); compiled instantiations: [{}]",
+                            spellings.join(", "),
+                            rendered.join(", ")
+                        ))
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A live runtime bound to one admitted artifact.
@@ -54,12 +159,7 @@ impl<'a> Session<'a> {
         config: crate::debug::DebugConfig,
     ) -> crate::debug::DebugStart<'e> {
         use crate::debug::{DebugStart, FinishRecord, LiveExecution};
-        let resolved = match &spec.target {
-            CallTarget::ByName { module, name } => {
-                self.admitted.callable_by_name(module, name)
-            }
-            CallTarget::ByFunction { function } => self.admitted.callable_by_function(function),
-        };
+        let resolved = resolve_call(self.admitted, &spec.target, &spec.type_arguments);
         let invalid = |session: &Self, reason: String| {
             let outcome = Outcome::InvalidRequest { reason };
             let stream = crate::debug::empty_stream();
@@ -81,12 +181,12 @@ impl<'a> Session<'a> {
                 stream,
             }))
         };
-        let Some(callable_index) = resolved else {
-            return invalid(self, "unknown callable".to_owned());
+        let resolved = match resolved {
+            Ok(resolved) => resolved,
+            Err(reason) => return invalid(self, reason),
         };
-        let entry = &self.admitted.artifact.callables[callable_index];
-        let callable_function = entry.function.clone();
-        let callable_name = format!("{}::{}", entry.module, entry.name);
+        let callable_function = resolved.function;
+        let callable_name = resolved.name;
         let declared: Vec<ResourceLimit> = self
             .admitted
             .artifact
@@ -146,32 +246,27 @@ impl<'a> Session<'a> {
     /// same artifact, callable, arguments, capabilities, providers,
     /// and envelope produce the same outcome and evidence.
     pub fn call(&mut self, caps: &CapabilityEnv, spec: CallSpec) -> (Outcome, ExecutionRecord) {
-        let resolved = match &spec.target {
-            CallTarget::ByName { module, name } => {
-                self.admitted.callable_by_name(module, name)
+        let resolved = resolve_call(self.admitted, &spec.target, &spec.type_arguments);
+        let resolved = match resolved {
+            Ok(resolved) => resolved,
+            Err(reason) => {
+                let outcome = Outcome::InvalidRequest { reason };
+                let record = self.record(
+                    caps,
+                    &spec,
+                    String::new(),
+                    String::new(),
+                    Vec::new(),
+                    outcome.clone(),
+                    Vec::new(),
+                    ResourceUsage::default(),
+                    Vec::new(),
+                );
+                return (outcome, record);
             }
-            CallTarget::ByFunction { function } => self.admitted.callable_by_function(function),
         };
-        let Some(callable_index) = resolved else {
-            let outcome = Outcome::InvalidRequest {
-                reason: "unknown callable".to_owned(),
-            };
-            let record = self.record(
-                caps,
-                &spec,
-                String::new(),
-                String::new(),
-                Vec::new(),
-                outcome.clone(),
-                Vec::new(),
-                ResourceUsage::default(),
-                Vec::new(),
-            );
-            return (outcome, record);
-        };
-        let entry = &self.admitted.artifact.callables[callable_index];
-        let callable_function = entry.function.clone();
-        let callable_name = format!("{}::{}", entry.module, entry.name);
+        let callable_function = resolved.function;
+        let callable_name = resolved.name;
         let declared: Vec<ResourceLimit> = self
             .admitted
             .artifact

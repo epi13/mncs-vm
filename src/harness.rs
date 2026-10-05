@@ -48,13 +48,24 @@ pub fn compile_to_backend(
     source: &str,
     locator: &str,
 ) -> Result<(mncs_model::Program, mncs_model::BackendArtifact), HarnessError> {
+    compile_to_backend_seeded(source, locator, &[])
+}
+
+/// Seeded variant: host-requested generic instantiations are compiled
+/// in, so the emitted artifact carries generic entrypoints for them.
+pub fn compile_to_backend_seeded(
+    source: &str,
+    locator: &str,
+    seeds: &[mncs_model::HostGenericSeedRequest],
+) -> Result<(mncs_model::Program, mncs_model::BackendArtifact), HarnessError> {
     let envelope = mncs_syntax::SourceEnvelope::inline(
         mncs_syntax::SourceArtifactKind::Program,
         locator,
         source.to_owned(),
     );
     let compiler = mncs_compiler::ReferenceCompiler::default();
-    let front_end = compiler.front_end_with_resolver(envelope, &mncs_compiler::NullResolver);
+    let front_end =
+        compiler.front_end_with_resolver_and_seeds(envelope, &mncs_compiler::NullResolver, seeds);
     if !front_end.is_valid() {
         return Err(HarnessError::InvalidSource(format!(
             "{:?}",

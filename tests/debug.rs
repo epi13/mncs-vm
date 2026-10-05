@@ -58,6 +58,7 @@ fn spec(module: &str, function: &str, args: Vec<mncs_model::ExecutionValue>) -> 
             name: function.to_owned(),
         },
         arguments: args,
+        type_arguments: Vec::new(),
         envelope: envelope(),
     }
 }
@@ -572,6 +573,7 @@ fn effect_boundary_stop_dispatches_once() {
                 name: "read_clock".to_owned(),
             },
             arguments: Vec::new(),
+            type_arguments: Vec::new(),
             envelope: envelope(),
         },
         config,
@@ -634,6 +636,7 @@ fn effect_after_stop_continues_past_dispatch() {
                 name: "read_clock".to_owned(),
             },
             arguments: Vec::new(),
+            type_arguments: Vec::new(),
             envelope: envelope(),
         },
         config,
