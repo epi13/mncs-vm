@@ -25,8 +25,14 @@ and artifact SHA-256, validates supplied compiler build receipts, checks file
 replacement across admission/calls and bounds responses/timeouts. It terminates
 only its own child. Execution provenance uses
 `mncs.provider-execution-provenance/1`; it does not manufacture Test or assurance
-PASS verdicts. Runtime build origin is **unknown** unless separately established:
-an executable hash and repository HEAD are not a compiler build certificate.
+PASS verdicts. The selected VM embeds `mncs.vm-build-receipt/1`, which records
+the compiled source inputs, dependency closure, dirty-content identity, build
+configuration and Cargo/Rust compiler executable identities. `mncs-vm describe`
+returns the receipt with the executable identity; Doctor checks its current
+inputs and toolchain bytes, and the provider-owned `build` operation rebuilds
+only the selected checkout and verifies the new receipt. This establishes a
+locally observed build chain, not an independent or reproducible-build
+attestation. An executable hash or repository HEAD alone remains insufficient.
 
 Compiler/VM source and operation identities remain compiler-owned. Runtime debug
 continues through `debug --serve`; no source mapping logic moved into VM. The
