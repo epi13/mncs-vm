@@ -80,8 +80,12 @@ pub fn translate_research_artifact(
         });
     }
     let mut callables: Vec<CallableEntry> = Vec::with_capacity(backend.exports.len());
+    let mut unsupported: Vec<String> = backend.unsupported.clone();
     for name in &backend.exports {
-        callables.push(resolve_export(&payload, name)?);
+        match resolve_export(&payload, name)? {
+            Some(entry) => callables.push(entry),
+            None => unsupported.push(format!("export {name}: no ssa instance")),
+        }
     }
     let mut capabilities: Vec<String> = payload
         .ssa
@@ -132,7 +136,7 @@ pub fn translate_research_artifact(
         },
         exports: backend.exports.clone(),
         assumptions: backend.assumptions.clone(),
-        unsupported: backend.unsupported.clone(),
+        unsupported,
     };
     Ok(artifact.seal())
 }
@@ -160,12 +164,15 @@ struct ResearchPayload {
 /// the payload program routes `name` through its home-module
 /// namespace, the public `function_id` derivation binds it, and the
 /// SSA semantic identity confirms it. Only routing data crosses this
-/// boundary; program semantics stay upstream. Ambiguous or missing
-/// routes are refusals, never guesses.
+/// boundary; program semantics stay upstream. Ambiguous routes are
+/// refusals, never guesses; names with no SSA instance (generic
+/// exports without a seeded monomorphization) resolve to `None` so
+/// the caller can record them as explicitly unsupported instead of
+/// refusing the whole artifact.
 fn resolve_export(
     payload: &ResearchPayload,
     name: &str,
-) -> Result<CallableEntry, AdmissionRefusal> {
+) -> Result<Option<CallableEntry>, AdmissionRefusal> {
     let program_module = payload
         .program
         .get("module")
@@ -202,16 +209,14 @@ fn resolve_export(
     match candidates.len() {
         1 => {
             let (namespace, function) = candidates.pop().unwrap_or_default();
-            Ok(CallableEntry {
+            Ok(Some(CallableEntry {
                 module: namespace,
                 name: name.to_owned(),
                 function,
                 semantic: None,
-            })
+            }))
         }
-        0 => Err(AdmissionRefusal::UnresolvedFact {
-            fact: format!("export {name} matches no ssa function"),
-        }),
+        0 => Ok(None),
         _ => Err(AdmissionRefusal::UnresolvedFact {
             fact: format!("export {name} is ambiguous across functions"),
         }),
