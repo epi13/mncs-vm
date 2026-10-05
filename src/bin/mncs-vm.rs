@@ -30,6 +30,9 @@ fn main() {
     let code = match command {
         "run" => cmd_run(&argv[2..]),
         "batch" => cmd_batch(&argv[2..]),
+        "serve" => cmd_serve(&argv[2..]),
+        "describe" => { println!("{}", runtime_description()); 0 },
+        "admit" => cmd_admit(&argv[2..]),
         "compile" => cmd_compile(&argv[2..]),
         "debug" => cmd_debug(&argv[2..]),
         "version" => {
@@ -49,8 +52,109 @@ fn print_help() {
         "mncs-vm: canonical MNCS VM runner and live-debug driver\n\nusage:\n  \
          mncs-vm run --artifact FILE|--compile FILE --callable MODULE::NAME|--function ID\n    \
          [--args FILE] [--type-args FILE] [--envelope FILE] [--observe POLICY]\n    \
-         [--provider CAP=FILE]... [--output FILE]\n  mncs-vm batch --artifact FILE --calls FILE --output FILE [--envelope FILE]\n  mncs-vm compile FILE --output FILE\n  mncs-vm debug --stdio\n  mncs-vm debug --serve SOCKET\n  mncs-vm version"
+         [--provider CAP=FILE]... [--output FILE]\n  mncs-vm batch --artifact FILE --calls FILE --output FILE [--envelope FILE]\n  mncs-vm serve --artifact FILE\n  mncs-vm describe\n  mncs-vm admit --artifact FILE\n  mncs-vm compile FILE --output FILE\n  mncs-vm debug --stdio\n  mncs-vm debug --serve SOCKET\n  mncs-vm version"
     );
+}
+
+const SESSION_SCHEMA: &str = "mncs.vm.session/1";
+const MAX_SESSION_REQUEST_BYTES: u64 = 16 * 1024 * 1024;
+
+fn runtime_description() -> serde_json::Value {
+    serde_json::json!({"schema_version":"mncs.vm.runtime-provider/1", "version":env!("CARGO_PKG_VERSION"),
+        "artifact_schema":mncs_vm::artifact::ARTIFACT_SCHEMA_VERSION,
+        "vm_contract":mncs_vm::artifact::VM_CONTRACT,
+        "ssa_schemas":mncs_vm::artifact::ACCEPTED_SSA_SCHEMAS,
+        "execution_request_schema":"0.1", "session_schema":SESSION_SCHEMA,
+        "debug_schema":"mncs.vm.debug/1", "debug_cli_schema":CLI_SCHEMA_VERSION,
+        "modes":["run", "batch", "serve", "debug"],
+        "capability_binding":"serve is effect-free; explicit provider bindings remain run/debug-owned"})
+}
+
+fn selected_artifact(argv: &[String]) -> Result<Admitted, String> {
+    if argv.len() != 2 || argv[0] != "--artifact" { return Err("requires --artifact FILE".into()); }
+    load_admitted(Some(Path::new(&argv[1])), None)
+}
+
+fn cmd_admit(argv: &[String]) -> i32 {
+    match selected_artifact(argv) {
+        Ok(admitted) => { println!("{}", serde_json::json!({"schema_version":"mncs.vm.admission/1", "status":"admitted", "artifact_id":admitted.artifact_id(), "runtime":runtime_description()})); 0 }
+        Err(reason) => { println!("{}", serde_json::json!({"schema_version":"mncs.vm.admission/1", "status":"refused", "reason":reason})); 2 }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionRequest {
+    schema_version: String,
+    id: serde_json::Value,
+    request: mncs_model::ExecutionRequest,
+    #[serde(default)]
+    envelope: Option<ResourceEnvelope>,
+    #[serde(default)]
+    callable_reference: Option<TestCallableReference>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct TestCallableReference {
+    artifact_identity: String,
+    callable_identity: String,
+    declaration_identity: String,
+    test_case_identity: String,
+    signature_identity: String,
+}
+
+fn cmd_serve(argv: &[String]) -> i32 {
+    let admitted = match selected_artifact(argv) { Ok(a) => a, Err(reason) => return run_error(&reason) };
+    let caps = CapabilityEnv::empty();
+    let mut session = Session::open(&admitted);
+    println!("{}", serde_json::json!({"schema_version":SESSION_SCHEMA,"status":"ready","artifact_id":admitted.artifact_id(),"runtime":runtime_description()}));
+    if std::io::stdout().flush().is_err() { return 2; }
+    let mut input = std::io::stdin().lock();
+    loop {
+        let mut line = String::new();
+        // Bounded stdio only; no listener, ambient effects or unbounded input allocation.
+        match std::io::Read::take(&mut input, MAX_SESSION_REQUEST_BYTES + 1).read_line(&mut line) {
+            Ok(0) => return 0,
+            Ok(_) if line.len() as u64 > MAX_SESSION_REQUEST_BYTES => return run_error("session request exceeds byte bound"),
+            Ok(_) => (),
+            Err(error) => return run_error(&error.to_string()),
+        }
+        let parsed = serde_json::from_str::<SessionRequest>(&line).map_err(|e| e.to_string());
+        let id = serde_json::from_str::<serde_json::Value>(&line).ok().and_then(|v| v.get("id").cloned());
+        let result = parsed.and_then(|call| {
+            if call.schema_version != SESSION_SCHEMA { return Err("unsupported session schema".into()); }
+            let target = call.request.target.clone();
+            if let Some(reference) = &call.callable_reference {
+                let index = admitted.callable_by_name(&target.module, &target.function)
+                    .ok_or_else(|| "test callable unavailable".to_owned())?;
+                let binding = admitted.artifact.callables[index].test_binding.as_ref()
+                    .ok_or_else(|| "callable has no compiler test binding".to_owned())?;
+                if reference.artifact_identity != admitted.artifact_id()
+                    || reference.callable_identity != binding.callable_identity.0
+                    || reference.declaration_identity != binding.declaration_identity.0
+                    || Some(reference.test_case_identity.as_str()) != binding.test_case_identity.as_ref().map(|id| id.0.as_str())
+                    || reference.signature_identity != binding.signature_identity
+                { return Err("test callable identity reference mismatch".into()); }
+            }
+            let spec = CallSpec::from_request(call.request, call.envelope.as_ref())?;
+            let (outcome, record) = session.call(&caps, spec);
+            let status = match outcome {
+                Outcome::Completed => "returned", Outcome::BudgetExhausted { .. } => "budget_exhausted",
+                Outcome::Unsupported { .. } => "unsupported", Outcome::InvalidRequest { .. } => "invalid_request",
+                _ => "runtime_failure",
+            };
+            let execution = serde_json::json!({"schema_version":"0.1", "status":status,
+                "target":target, "artifact_identity":record.artifact_id, "function_identity":record.callable_function,
+                "backend":"mncs-vm-direct", "steps":record.usage.steps,
+                "returned":record.returned.iter().map(mncs_vm::value::to_wire).collect::<Vec<_>>(),
+                "invoked_callable":call.callable_reference,
+                "failure_reason":if outcome.is_completed() { None } else { Some(serde_json::to_value(&outcome).unwrap()) }});
+            Ok(serde_json::json!({"id":call.id,"schema_version":SESSION_SCHEMA,"ok":true,"result":{"outcome":outcome,"record":record,"execution":execution}}))
+        }).unwrap_or_else(|reason| serde_json::json!({"id":id,"schema_version":SESSION_SCHEMA,"ok":false,"reason":reason}));
+        println!("{result}");
+        if std::io::stdout().flush().is_err() { return 2; }
+    }
 }
 
 // ---------------------------------------------------------------------------

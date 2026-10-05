@@ -272,6 +272,17 @@ pub fn admit_artifact(artifact: VmArtifact) -> Result<Admitted, AdmissionRefusal
                 ),
             });
         }
+        if let Some(binding) = &callable.test_binding {
+            let function = &ssa.functions[ssa_functions[&callable.function]];
+            if binding.module != callable.module || binding.function != callable.name
+                || binding.callable_identity != function.semantic_identity
+                || binding.declaration_identity != mncs_model::test_declaration_id(&binding.module, &binding.function)
+                || binding.test_case_identity.is_none()
+                || !binding.signature_identity.starts_with("sha256:")
+            {
+                return Err(AdmissionRefusal::Malformed { reason: "test binding does not match callable SSA identity".into() });
+            }
+        }
         if by_function
             .insert(callable.function.clone(), index)
             .is_some()

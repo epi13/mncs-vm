@@ -91,6 +91,7 @@ fn dangling_callable_is_unresolved() {
         name: "missing".to_owned(),
         function: "mncs:0.2:function:ghost::missing".to_owned(),
         semantic: None,
+        test_binding: None,
     });
     artifact = artifact.seal();
     let refusal = admit_artifact(artifact).unwrap_err();
@@ -112,6 +113,7 @@ fn empty_function_identity_is_unresolved() {
         name: "missing".to_owned(),
         function: String::new(),
         semantic: None,
+        test_binding: None,
     });
     artifact = artifact.seal();
     let refusal = admit_artifact(artifact).unwrap_err();

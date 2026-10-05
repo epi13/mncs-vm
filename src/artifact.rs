@@ -41,6 +41,9 @@ pub struct CallableEntry {
     /// Stable semantic identity of the callable, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic: Option<String>,
+    /// Compiler-owned first-class test identity facts, sealed with the SSA target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_binding: Option<mncs_model::BackendCallableBinding>,
 }
 
 /// One compiled generic instantiation the artifact realizes.

@@ -1,17 +1,148 @@
 {
   "schema_version": "mncs-family.repository-manifest/v0alpha1",
   "repository": "mncs-vm",
-  "revision": 2,
+  "revision": 3,
   "manifest_location": "in-repository",
-  "authority": {"note": "VM owns the execution semantics of the MNCS-native virtual machine over frozen artifacts; it does not own source semantics, storage, placement, scheduling, testing, or model/provenance policy."},
+  "authority": {
+    "note": "VM owns the execution semantics of the MNCS-native virtual machine over frozen artifacts; it does not own source semantics, storage, placement, scheduling, testing, or model/provenance policy."
+  },
   "contracts": {
     "provides": [
-      {"contract": "vm-artifact", "version": "0.1.0", "kind": "execution-runtime", "stability": "experimental", "fingerprint_sources": ["src/"]}
+      {
+        "contract": "vm-artifact",
+        "version": "0.1.0",
+        "kind": "execution-runtime",
+        "stability": "experimental",
+        "fingerprint_sources": [
+          "src/"
+        ]
+      },
+      {
+        "contract": "vm-runtime",
+        "version": "1",
+        "kind": "execution-runtime-provider",
+        "stability": "experimental",
+        "effects": [
+          "read"
+        ],
+        "artifact_contract": {
+          "artifact_schema": "mncs.vm.artifact/1",
+          "ssa_schema": "0.5",
+          "vm_contract": "mncs.vm/0.1",
+          "session_schema": "mncs.vm.session/1",
+          "execution_request_schema": "0.1",
+          "debug_schema": "mncs.vm.debug/1"
+        },
+        "fingerprint_sources": [
+          "src/",
+          "python/mncs_vm_client/",
+          "tools/provider.py"
+        ],
+        "invocation": {
+          "kind": "python",
+          "path": "tools/provider.py",
+          "fixed_argv": [
+            "inspect"
+          ],
+          "toolchain": {
+            "repository": "mncs-vm",
+            "path": "target/debug/mncs-vm"
+          },
+          "toolchain_env": "MNCS_VM_BIN"
+        }
+      },
+      {
+        "contract": "vm-admission",
+        "version": "1",
+        "kind": "execution-runtime-provider",
+        "stability": "experimental",
+        "effects": [
+          "read"
+        ],
+        "artifact_contract": {
+          "artifact_schema": "mncs.vm.artifact/1",
+          "ssa_schema": "0.5",
+          "vm_contract": "mncs.vm/0.1",
+          "session_schema": "mncs.vm.session/1",
+          "execution_request_schema": "0.1",
+          "debug_schema": "mncs.vm.debug/1"
+        },
+        "fingerprint_sources": [
+          "src/",
+          "python/mncs_vm_client/",
+          "tools/provider.py"
+        ],
+        "invocation": {
+          "kind": "python",
+          "path": "tools/provider.py",
+          "fixed_argv": [
+            "admit"
+          ],
+          "toolchain": {
+            "repository": "mncs-vm",
+            "path": "target/debug/mncs-vm"
+          },
+          "toolchain_env": "MNCS_VM_BIN"
+        }
+      },
+      {
+        "contract": "vm-call",
+        "version": "1",
+        "kind": "execution-runtime-provider",
+        "stability": "experimental",
+        "effects": [
+          "execute"
+        ],
+        "artifact_contract": {
+          "artifact_schema": "mncs.vm.artifact/1",
+          "ssa_schema": "0.5",
+          "vm_contract": "mncs.vm/0.1",
+          "session_schema": "mncs.vm.session/1",
+          "execution_request_schema": "0.1",
+          "debug_schema": "mncs.vm.debug/1"
+        },
+        "fingerprint_sources": [
+          "src/",
+          "python/mncs_vm_client/",
+          "tools/provider.py"
+        ],
+        "invocation": {
+          "kind": "python",
+          "path": "tools/provider.py",
+          "fixed_argv": [
+            "call"
+          ],
+          "toolchain": {
+            "repository": "mncs-vm",
+            "path": "target/debug/mncs-vm"
+          },
+          "toolchain_env": "MNCS_VM_BIN"
+        }
+      }
     ],
     "consumes": [],
-    "tests": [{"test": "vm-tests", "covers": ["vm-artifact"], "obligation": "self", "command": {"argv": ["cargo", "test", "--offline"], "timeout_seconds": 600}}]
-  }
-,
+    "tests": [
+      {
+        "test": "vm-tests",
+        "covers": [
+          "vm-artifact"
+        ],
+        "obligation": "self",
+        "command": {
+          "argv": [
+            "cargo",
+            "test",
+            "--offline"
+          ],
+          "timeout_seconds": 600
+        }
+      }
+    ]
+  },
   "projection_inventory": ".mncs/projections.json",
-  "structure_profile": {"repository": "machine-native-complexity-development-specification", "path": "profiles/semantic-project.json", "identity": "sha256:259e41ea542e7a1400f1471b0316de4fafc888d6f953c8e91165ff2cfe1e78cb"}
+  "structure_profile": {
+    "repository": "machine-native-complexity-development-specification",
+    "path": "profiles/semantic-project.json",
+    "identity": "sha256:259e41ea542e7a1400f1471b0316de4fafc888d6f953c8e91165ff2cfe1e78cb"
+  }
 }

@@ -586,3 +586,35 @@ fn compile_then_run_matches_direct_compile() {
     let from_compile: serde_json::Value = serde_json::from_slice(&via_compile.stdout).unwrap();
     assert_eq!(from_artifact, from_compile, "artifact reuse is byte-identical");
 }
+
+#[test]
+fn retained_session_refuses_bad_frames_and_resets_each_call_budget() {
+    let admitted = mncs_vm::harness::tests_only::compile_corpus("arith.mncs");
+    let path = std::env::temp_dir().join(format!("mncs-vm-session-{}.json", std::process::id()));
+    std::fs::write(&path, serde_json::to_vec(&admitted.artifact).unwrap()).unwrap();
+    let mut child = Command::new(bin()).args(["serve", "--artifact", path.to_str().unwrap()])
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut read = || { let mut line = String::new(); output.read_line(&mut line).unwrap(); serde_json::from_str::<serde_json::Value>(&line).unwrap() };
+    assert_eq!(read()["status"], "ready");
+    let request = serde_json::json!({"schema_version":"0.1", "target":{"module":"mncs.vmcorpus.arith.v1","function":"add3"}, "arguments":[int_arg(10)],"step_budget":100});
+    let mut send = |id: u64, body: serde_json::Value| {
+        writeln!(input, "{}", body).unwrap(); input.flush().unwrap(); let response = read();
+        assert_eq!(response["id"],id); response
+    };
+    let bad = send(0, serde_json::json!({"schema_version":"wrong","id":0,"request":request}));
+    assert_eq!(bad["ok"],false);
+    let forged=send(1,serde_json::json!({"schema_version":"mncs.vm.session/1","id":1,"request":request,"callable_reference":{"artifact_identity":"forged","callable_identity":"forged","declaration_identity":"forged","test_case_identity":"forged","signature_identity":"forged"}}));
+    assert_eq!(forged["ok"],false);
+    let frame=|id,req|serde_json::json!({"schema_version":"mncs.vm.session/1","id":id,"request":req});
+    let mut low=request.clone();low["step_budget"]=serde_json::json!(1);
+    let exhausted=send(2,frame(2,low.clone()));assert_eq!(exhausted["result"]["outcome"]["kind"],"budget_exhausted");
+    let exhausted_again=send(3,frame(3,low));assert_eq!(exhausted["result"]["record"]["usage"],exhausted_again["result"]["record"]["usage"]);
+    let first=send(4,frame(4,request.clone()));let second=send(5,frame(5,request));
+    assert_eq!(first["result"]["outcome"]["kind"],"completed");
+    assert_eq!(first["result"]["execution"]["returned"][0]["integer"]["value"],13);
+    assert_eq!(first["result"]["record"]["usage"],second["result"]["record"]["usage"]);
+    assert_eq!(first["result"]["record"]["resource_limits"].as_array().unwrap().iter().find(|r|r["dimension"]=="steps").unwrap()["limit"],100);
+    drop(send);drop(input);assert!(child.wait().unwrap().success());std::fs::remove_file(path).unwrap();
+}
