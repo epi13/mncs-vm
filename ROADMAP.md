@@ -10,6 +10,24 @@ This roadmap describes the path from an empty repository to the canonical MNCS-n
 
 The project should evolve one implementation forward. Milestones are checkpoints in that implementation, not frozen product generations.
 
+## Campaign note (2026-10-04, backend-execution campaign)
+
+- Real new-compiler content executes through the canonical artifact:
+  `tests/compiler_source.rs` compiles sibling
+  `mncs-compiler/src/compiler/source.mncs`, migrates, admits, and
+  differentially executes `page_count_for`, `span_valid_global`,
+  and `fnv_basis` against the `execute_ssa` oracle plus concrete
+  expected values.
+- Migration records uninstantiated generic exports under the
+  artifact's existing `unsupported` list instead of refusing the
+  whole artifact; ambiguity still refuses, and zero callables still
+  fails admission.
+- Next gap: session calls carry no type arguments, so generic
+  helpers (`byte_at<N>` and the other parameterized source
+  functions) cannot be invoked through `Session::call` yet. The
+  probe path already threads generic seeds; the VM call boundary
+  needs the same.
+
 ## Phase 0 — Runtime survey and contract extraction
 
 Before implementation, establish the actual current boundary.
