@@ -157,7 +157,79 @@ fn valid_spans_agree_with_oracle() {
     );
     assert_eq!(outcome, Outcome::Completed);
     assert_eq!(values, vec![u64_arg(0)]);
+    for (function, expected) in [
+        ("attempt_one", 1),
+        ("attempt_plain", 8),
+        ("attempt_sum", 8),
+        ("attempt_branch", 8),
+        ("nested_sum", 32),
+        ("nested_inline", 32),
+    ] {
+        let (outcome, values) = compare(&program, &admitted, function, Vec::new());
+        assert_eq!(outcome, Outcome::Completed, "{function}");
+        assert_eq!(values, vec![u64_arg(expected)], "{function}");
+    }
     let _ = compile_corpus("views.mncs");
+}
+
+fn run_vm_with_iterations(
+    admitted: &mncs_vm::admit::Admitted,
+    function: &str,
+    iterations: u64,
+) -> Outcome {
+    let mut env = envelope();
+    env.limits.push(ResourceLimit {
+        dimension: "iterations".to_owned(),
+        limit: iterations,
+    });
+    let caps = CapabilityEnv::empty();
+    let mut session = Session::open(admitted);
+    let (outcome, _) = session.call(
+        &caps,
+        CallSpec {
+            target: CallTarget::ByName {
+                module: MODULE.to_owned(),
+                name: function.to_owned(),
+            },
+            arguments: Vec::new(),
+            type_arguments: Vec::new(),
+            envelope: env,
+        },
+    );
+    outcome
+}
+
+/// Iteration accounting charges one unit per executed loop pass:
+/// multi-block bodies (calls, branches) and nested loops must not
+/// inflate the count, and every pass must still be charged. Each
+/// case pins the exact live-count peak: the stated budget completes
+/// while one less exhausts on the `iterations` dimension.
+#[test]
+fn iteration_accounting_counts_passes_not_block_visits() {
+    let (_, admitted) = program_and_admitted();
+    // nested_inline peaks at 4 (outer) + 8 (inner, reset per outer
+    // pass) live in one frame; nested_sum meters per frame, so its
+    // peak is the callee inner loop's 8.
+    for (function, limit) in [
+        ("attempt_plain", 8),
+        ("attempt_sum", 8),
+        ("attempt_branch", 8),
+        ("nested_sum", 8),
+        ("nested_inline", 12),
+    ] {
+        assert_eq!(
+            run_vm_with_iterations(&admitted, function, limit),
+            Outcome::Completed,
+            "{function}: exact pass budget must complete",
+        );
+        assert!(
+            matches!(
+                run_vm_with_iterations(&admitted, function, limit - 1),
+                Outcome::BudgetExhausted { dimension } if dimension == "iterations"
+            ),
+            "{function}: budget one below the pass count must exhaust",
+        );
+    }
 }
 
 #[test]

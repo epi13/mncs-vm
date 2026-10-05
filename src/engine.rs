@@ -327,6 +327,10 @@ impl<'a> Engine<'a> {
         parts: &mut LiveParts,
         mut dbg: Option<&mut DebugDriver>,
     ) -> DriveExit {
+        // Set when a callee return resumes the caller mid-block: the
+        // block was already entered, so the next loop pass must not
+        // run entry accounting (or eventing) for it again.
+        let mut resumed_mid_block = false;
         loop {
             let function_index = parts.frame.function;
             let block_id = parts.frame.block.clone();
@@ -343,10 +347,14 @@ impl<'a> Engine<'a> {
             // A function-entry suspension already ran block entry for
             // the callee entry block; the resumed loop skips it once
             // so iteration accounting and events run exactly once.
+            // A callee return likewise resumes mid-block: entry
+            // accounting must not run again for the resumed block.
             let prefetched = dbg
                 .as_deref_mut()
                 .is_some_and(|driver| driver.take_block_prefetched());
-            if !prefetched {
+            let skip_entry = prefetched || resumed_mid_block;
+            resumed_mid_block = false;
+            if !skip_entry {
                 if let Err(outcome) =
                     self.enter_block(&mut parts.frame, function_index, &block_id)
                 {
@@ -584,6 +592,9 @@ impl<'a> Engine<'a> {
                             parts.frame.values.insert(output, value);
                         }
                     }
+                    // Resuming the caller mid-block: skip entry
+                    // accounting once at the loop top.
+                    resumed_mid_block = true;
                     if let Some(driver) = dbg.as_deref_mut() {
                         // The call's result lands now: emit its
                         // operation_result so every operation_enter
@@ -729,12 +740,14 @@ impl<'a> Engine<'a> {
         }))
     }
 
-    /// Region iteration accounting on block entry. Every entry into a
-    /// region body block is one executed iteration; past the declared
-    /// bound the run ends with BudgetExhausted. This is how
-    /// compiler-visible iteration bounds survive into execution, even
-    /// though valid compiler output never exceeds them (the check is
-    /// defense in depth, plus enforcement for hand-built artifacts).
+    /// Region iteration accounting on block entry. Entering a
+    /// region's body entry starts one executed pass; past the
+    /// declared bound the run ends with BudgetExhausted. A new pass
+    /// restarts every strictly nested loop, so each loop activation
+    /// gets its own bound. This is how compiler-visible iteration
+    /// bounds survive into execution, even though valid compiler
+    /// output never exceeds them (the check is defense in depth,
+    /// plus enforcement for hand-built artifacts).
     fn enter_block(
         &self,
         frame: &mut Frame,
@@ -743,8 +756,26 @@ impl<'a> Engine<'a> {
     ) -> Result<(), Outcome> {
         let function = &self.module.functions[function_index];
         for region in &function.bounded_iterations {
-            if !region.body_blocks.iter().any(|b| b.0 == block_id) {
+            if region.body_entry.0 != block_id {
                 continue;
+            }
+            // A new pass of this region restarts every strictly
+            // nested loop: each activation gets the full declared
+            // bound instead of inheriting a sibling pass's count.
+            let nested: Vec<String> = function
+                .bounded_iterations
+                .iter()
+                .filter(|other| {
+                    other.identity != region.identity
+                        && region
+                            .body_blocks
+                            .iter()
+                            .any(|body| body.0 == other.body_entry.0)
+                })
+                .map(|other| other.identity.0.clone())
+                .collect();
+            for identity in nested {
+                frame.iters.remove(&identity);
             }
             let count = frame.iters.entry(region.identity.0.clone()).or_insert(0);
             *count += 1;
