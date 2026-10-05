@@ -16,9 +16,9 @@
 //! BooleanNot, ByteBitwise, ByteShift, ByteCompare, Select (scalar),
 //! RecordConstruct, RecordProject, FiniteConstruct,
 //! FinitePayloadProject, FiniteIsVariant, SequenceConstruct,
-//! SequenceProject, SequenceLength, SequenceReplace, BoundCheck,
-//! Convert (integer/boolean/byte totals), Call, Effect (recorded),
-//! HostCall (provider-dispatched), Return, Branch,
+//! SequenceProject, SequenceLength, SequenceReplace, ViewConstruct,
+//! BoundCheck, Convert (integer/boolean/byte totals), Call, Effect
+//! (recorded), HostCall (provider-dispatched), Return, Branch,
 //! ConditionalBranch, Failure. RuntimeCheck is Unsupported upstream
 //! as well, so agreement there is exact.
 
@@ -1264,6 +1264,43 @@ impl<'a> Engine<'a> {
                         value: elements.len() as i128,
                         bits: 64,
                         signed: false,
+                    },
+                );
+                Step::Continue
+            }
+            SsaInstructionKind::ViewConstruct { view_bound, .. } => {
+                let mncs_model::SequenceBound::UpTo(capacity) = view_bound else {
+                    return invalid(
+                        "view construction must produce an UpTo-bounded view".to_owned(),
+                    );
+                };
+                if instruction.inputs.len() != 3 {
+                    return invalid("view construction requires source and range".to_owned());
+                }
+                let source = frame.values.get(&instruction.inputs[0].0).cloned();
+                let start = frame.values.get(&instruction.inputs[1].0).cloned();
+                let end = frame.values.get(&instruction.inputs[2].0).cloned();
+                let (
+                    Some(Value::Sequence { elements }),
+                    Some(Value::Integer { value: start, .. }),
+                    Some(Value::Integer { value: end, .. }),
+                ) = (source, start, end)
+                else {
+                    return invalid("view construction operands were mistyped".to_owned());
+                };
+                if start < 0 || end < 0 || end < start {
+                    return halt_program("view range is not a valid half-open range");
+                }
+                if end > elements.len() as i128 {
+                    return halt_program("view range end exceeds the source length");
+                }
+                if (end - start) > *capacity as i128 {
+                    return halt_program("view range exceeds the declared view capacity");
+                }
+                emit(
+                    frame,
+                    Value::Sequence {
+                        elements: Arc::new(elements[start as usize..end as usize].to_vec()),
                     },
                 );
                 Step::Continue

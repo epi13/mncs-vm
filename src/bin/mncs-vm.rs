@@ -31,6 +31,7 @@ fn main() {
     let command = argv.get(1).map(String::as_str).unwrap_or("help");
     let code = match command {
         "run" => cmd_run(&argv[2..]),
+        "batch" => cmd_batch(&argv[2..]),
         "compile" => cmd_compile(&argv[2..]),
         "debug" => cmd_debug(&argv[2..]),
         "version" => {
@@ -50,7 +51,7 @@ fn print_help() {
         "mncs-vm: canonical MNCS VM runner and live-debug driver\n\nusage:\n  \
          mncs-vm run --artifact FILE|--compile FILE --callable MODULE::NAME|--function ID\n    \
          [--args FILE] [--type-args FILE] [--envelope FILE] [--observe POLICY]\n    \
-         [--provider CAP=FILE]... [--output FILE]\n  mncs-vm compile FILE --output FILE\n  mncs-vm debug --stdio\n  mncs-vm debug --serve SOCKET\n  mncs-vm version"
+         [--provider CAP=FILE]... [--output FILE]\n  mncs-vm batch --artifact FILE --calls FILE --output FILE [--envelope FILE]\n  mncs-vm compile FILE --output FILE\n  mncs-vm debug --stdio\n  mncs-vm debug --serve SOCKET\n  mncs-vm version"
     );
 }
 
@@ -233,6 +234,167 @@ fn cmd_run(argv: &[String]) -> i32 {
 fn usage_error(message: &str) -> i32 {
     eprintln!("mncs-vm: {message}");
     2
+}
+
+// ---------------------------------------------------------------------------
+// batch: many calls, one admission, one process
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct BatchCall {
+    id: String,
+    #[serde(default)]
+    callable: Option<String>,
+    #[serde(default)]
+    function: Option<String>,
+    #[serde(default)]
+    args: Vec<mncs_model::ExecutionValue>,
+    #[serde(default)]
+    type_args: Vec<mncs_model::ExecutionTypeArgument>,
+}
+
+fn cmd_batch(argv: &[String]) -> i32 {
+    let mut artifact_path: Option<PathBuf> = None;
+    let mut calls_path: Option<PathBuf> = None;
+    let mut output_path: Option<PathBuf> = None;
+    let mut envelope_path: Option<PathBuf> = None;
+    let mut index = 0;
+    while index < argv.len() {
+        match argv[index].as_str() {
+            "--artifact" => {
+                index += 1;
+                artifact_path = argv.get(index).map(PathBuf::from);
+                if artifact_path.is_none() {
+                    return usage_error("batch --artifact needs a path");
+                }
+            }
+            "--calls" => {
+                index += 1;
+                calls_path = argv.get(index).map(PathBuf::from);
+                if calls_path.is_none() {
+                    return usage_error("batch --calls needs a path");
+                }
+            }
+            "--output" => {
+                index += 1;
+                output_path = argv.get(index).map(PathBuf::from);
+                if output_path.is_none() {
+                    return usage_error("batch --output needs a path");
+                }
+            }
+            "--envelope" => {
+                index += 1;
+                envelope_path = argv.get(index).map(PathBuf::from);
+                if envelope_path.is_none() {
+                    return usage_error("batch --envelope needs a path");
+                }
+            }
+            flag => return usage_error(&format!("batch: unknown option {flag}")),
+        }
+        index += 1;
+    }
+    let (Some(artifact_path), Some(calls_path), Some(output_path)) =
+        (artifact_path, calls_path, output_path)
+    else {
+        return usage_error(
+            "usage: mncs-vm batch --artifact FILE --calls FILE --output FILE [--envelope FILE]",
+        );
+    };
+    let admitted = match load_admitted(Some(&artifact_path), None) {
+        Ok(admitted) => admitted,
+        Err(message) => return run_error(&message),
+    };
+    let envelope = match load_envelope(envelope_path.as_deref()) {
+        Ok(envelope) => envelope,
+        Err(message) => return run_error(&message),
+    };
+    let calls_text = match std::fs::read_to_string(&calls_path) {
+        Ok(text) => text,
+        Err(error) => return run_error(&format!("cannot read {}: {error}", calls_path.display())),
+    };
+    let calls: Vec<BatchCall> = match serde_json::from_str(&calls_text) {
+        Ok(calls) => calls,
+        Err(error) => return run_error(&format!("bad calls {}: {error}", calls_path.display())),
+    };
+    let caps = CapabilityEnv::empty();
+    let mut session = Session::open(&admitted);
+    let mut results = Vec::with_capacity(calls.len());
+    let mut kinds: BTreeMap<String, u64> = BTreeMap::new();
+    let mut steps_total: u64 = 0;
+    let mut steps_max: u64 = 0;
+    let mut memory_cells_max: u64 = 0;
+    let mut effects_total: u64 = 0;
+    let mut call_depth_max: u64 = 0;
+    for call in &calls {
+        let target = match (&call.callable, &call.function) {
+            (Some(name), None) => match name.split_once("::") {
+                Some((module, callable_name)) => CallTarget::ByName {
+                    module: module.to_owned(),
+                    name: callable_name.to_owned(),
+                },
+                None => {
+                    return run_error(&format!("call {}: callable needs MODULE::NAME", call.id));
+                }
+            },
+            (None, Some(identity)) => CallTarget::ByFunction {
+                function: identity.clone(),
+            },
+            _ => {
+                return run_error(&format!(
+                    "call {}: needs exactly one of callable or function",
+                    call.id
+                ));
+            }
+        };
+        let (outcome, record) = session.call(
+            &caps,
+            CallSpec {
+                target,
+                arguments: call.args.clone(),
+                type_arguments: call.type_args.clone(),
+                envelope: envelope.clone(),
+            },
+        );
+        *kinds.entry(outcome.tag().to_owned()).or_insert(0) += 1;
+        steps_total += record.usage.steps;
+        steps_max = steps_max.max(record.usage.steps);
+        memory_cells_max = memory_cells_max.max(record.usage.max_memory_cells);
+        effects_total += record.usage.effects;
+        call_depth_max = call_depth_max.max(record.usage.max_call_depth);
+        // Batch drops the argument echo: the caller holds the request
+        // stream and joins on id, so retaining 256-element blobs per
+        // result would bloat large batches ~10x for no evidence.
+        // Identity, values, usage, effects, and digests all stay.
+        let mut record_value = serde_json::to_value(&record).expect("record serializes");
+        if let Some(object) = record_value.as_object_mut() {
+            object.remove("arguments");
+        }
+        results.push(serde_json::json!({
+            "id": call.id,
+            "outcome": outcome,
+            "record": record_value,
+        }));
+    }
+    let document = serde_json::json!({
+        "artifact_id": admitted.artifact_id(),
+        "results": results,
+        "summary": {
+            "calls": calls.len(),
+            "outcomes": kinds,
+            "steps_total": steps_total,
+            "steps_max": steps_max,
+            "memory_cells_max": memory_cells_max,
+            "effects_total": effects_total,
+            "call_depth_max": call_depth_max,
+        },
+    });
+    if let Err(error) = std::fs::write(
+        &output_path,
+        serde_json::to_string(&document).unwrap_or_default(),
+    ) {
+        return run_error(&format!("cannot write {}: {error}", output_path.display()));
+    }
+    0
 }
 
 // ---------------------------------------------------------------------------

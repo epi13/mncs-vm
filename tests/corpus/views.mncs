@@ -1,0 +1,10 @@
+mncs 0.18;
+
+module mncs.vmcorpus.views.v1;
+
+fn span_len(text: [byte; 8], start: u64, end: u64) -> (result: u64) {
+    iterate i over text[start..end] carrying n: u64 = 0 {
+        next n = n + 1;
+    }
+    return n;
+}

@@ -166,6 +166,75 @@ fn run_with_type_args_executes_generic() {
 }
 
 #[test]
+fn batch_executes_many_calls_with_summary() {
+    let stamp = std::process::id();
+    let artifact_path =
+        std::env::temp_dir().join(format!("mncs-vm-cli-batch-{stamp}.json"));
+    let compile = Command::new(bin())
+        .args([
+            "compile",
+            &corpus("arith.mncs"),
+            "--output",
+            artifact_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn mncs-vm compile");
+    assert!(
+        compile.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let calls_path =
+        std::env::temp_dir().join(format!("mncs-vm-cli-batch-calls-{stamp}.json"));
+    let output_path =
+        std::env::temp_dir().join(format!("mncs-vm-cli-batch-out-{stamp}.json"));
+    std::fs::write(
+        &calls_path,
+        serde_json::to_string(&serde_json::json!([
+            {"id": "add", "callable": "mncs.vmcorpus.arith.v1::add2",
+             "args": [int_arg(3), int_arg(4)]},
+            {"id": "mul", "callable": "mncs.vmcorpus.arith.v1::muladd",
+             "args": [int_arg(2), int_arg(3), int_arg(4)]},
+            {"id": "bogus", "callable": "mncs.vmcorpus.arith.v1::missing",
+             "args": []},
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = Command::new(bin())
+        .args([
+            "batch",
+            "--artifact",
+            artifact_path.to_str().unwrap(),
+            "--calls",
+            calls_path.to_str().unwrap(),
+            "--output",
+            output_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn mncs-vm batch");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&output_path).unwrap()).unwrap();
+    let _ = std::fs::remove_file(&artifact_path);
+    let _ = std::fs::remove_file(&calls_path);
+    let _ = std::fs::remove_file(&output_path);
+    assert_eq!(document["summary"]["calls"], 3);
+    assert_eq!(document["summary"]["outcomes"]["completed"], 2);
+    assert_eq!(document["summary"]["outcomes"]["invalid_request"], 1);
+    assert!(document["summary"]["steps_total"].as_u64().unwrap() > 0);
+    let results = document["results"].as_array().unwrap();
+    assert_eq!(results[0]["id"], "add");
+    assert_eq!(results[0]["record"]["returned"][0]["Integer"]["value"], 7);
+    assert_eq!(results[1]["record"]["returned"][0]["Integer"]["value"], 10);
+    assert_eq!(results[2]["outcome"]["kind"], "invalid_request");
+}
+
+#[test]
 fn run_with_observe_retains_stream() {
     let policy_path = std::env::temp_dir().join(format!("mncs-vm-cli-policy-{}.json", std::process::id()));
     std::fs::write(
