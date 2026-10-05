@@ -49,6 +49,17 @@ cargo run --offline --example dump -- <corpus.mncs>  # inspect admitted SSA
 
 Read-only upstream constraint honored: `mncs-language` and `mncs-compiler` were inspected, never modified. Everything the VM could not do without an upstream change is a pressure record, not a workaround.
 
+## Direct path cleanup (2026-10-05)
+
+The compiler-owned direct emitter is shared by the pinned probe and all VM
+harness tests. `migrate.rs` and its consumers are removed. Frozen artifacts
+use lossless shared-node SSA encoding; admission builds immutable execution
+indexes once. Batch calls carry canonical compiler execution requests, so
+request budgets flow into VM enforcement without a second driver constant.
+See [the encoding contract](docs/SSA-ENCODING.md) and
+[request integration](docs/INTEGRATION.md). Measured results and scoped
+limitations live in the sibling compiler's `evidence/VM-EFFICIENCY.md`.
+
 ## What this repository owns
 
 `mncs-vm` owns the **execution semantics of the MNCS-native virtual machine**.

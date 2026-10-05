@@ -40,7 +40,7 @@ The existing `mncs-research-bytecode` backend and bounded SSA interpreter are a 
 
 Campaign 1 established the concrete migration shape:
 
-- `src/migrate.rs` (temporary, removal P-VM-COMPILER-001) translates research payloads into `mncs.vm.artifact/1` at the boundary, verifying upstream identity and refusing what it cannot translate;
+- Current state (2026-10-05): `src/migrate.rs` is deleted. All VM harness/corpus/differential consumers use the compiler-owned direct emitter (`mncs-compiler/tools/vm_emit.rs`); no legacy conversion consumer remains. The historical research boundary described below remains upstream-owned;
 - the research interpreter is a read-only differential oracle (`mncs_model::execute_ssa` over the same compilation), never modified, never linked as an execution path;
 - `tests/differential.rs` pins value and status agreement over the corpus;
 - compiler legality, translation evidence, integer meaning, and type shapes stay upstream; frames, metering, capabilities, outcomes, and evidence are VM-owned.
@@ -303,3 +303,28 @@ A mature integration boundary should permit:
 6. Store to persist artifacts/results without defining runtime behavior;
 7. Memory, Models, Learn, and other systems to participate through explicit interfaces rather than repository ownership leaks;
 8. the obsolete research runtime to be removed once migration is complete.
+
+
+## Canonical request envelopes (2026-10-05)
+
+`mncs-vm batch` reads `[{"id": "case", "request": ExecutionRequest}]`.
+`CallSpec::from_request` validates schema `0.1`, binds the target and generic
+arguments, and carries `step_budget` and optional `call_depth_budget` into
+the VM envelope. Remaining dimensions use finite VM defaults. An explicit
+`--envelope` only tightens request/default limits; artifact-declared bounds
+also tighten limits. Duplicate/unknown override dimensions are refused.
+Host grants and non-default execution policies require explicit VM capability
+bindings and are refused by this batch adapter. No authority is inferred.
+
+Compiler/language iteration bounds stay in frozen SSA; request fuel stays
+in the call contract; VM consumption stays in `ExecutionRecord.usage`.
+Records report effective merged limits, including artifact bounds. Nested
+and generic calls use the same execution envelope. A numerical request fuel
+limit applies to this executor's steps (instructions and terminator edges),
+not universal CPU cost or equal work across backends. Zero is a finite fuel
+limit and deterministically exhausts. Missing request fuel cannot decode.
+The low-level explicit `CallSpec` API remains available to embedded callers.
+
+See [SSA-ENCODING.md](SSA-ENCODING.md) for the single shared encoding and
+measurement workflow. VM development compilation requires the sibling
+compiler emitter source; frozen artifact execution requires no live compiler.

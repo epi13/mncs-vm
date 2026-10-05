@@ -69,8 +69,7 @@ fn oracle_status(status: &mncs_model::ExecutionStatus) -> &'static str {
 
 fn compare(corpus: &str, module: &str, function: &str, args: Vec<mncs_model::ExecutionValue>) {
     let source = std::fs::read_to_string(format!("tests/corpus/{corpus}")).unwrap();
-    let (program, backend) = harness::compile_to_backend(&source, corpus).unwrap();
-    let admitted = mncs_vm::migrate::admit_research_artifact(&backend).unwrap();
+    let (program, admitted) = harness::compile_direct(&source, corpus).unwrap();
 
     let request = mncs_model::ExecutionRequest {
         schema_version: "0.1".to_owned(),

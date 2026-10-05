@@ -14,7 +14,7 @@ The project should evolve one implementation forward. Milestones are checkpoints
 
 - Real new-compiler content executes through the canonical artifact:
   `tests/compiler_source.rs` compiles sibling
-  `mncs-compiler/src/compiler/source.mncs`, migrates, admits, and
+  `mncs-compiler/src/compiler/source.mncs`, emits directly, admits, and
   differentially executes `page_count_for`, `span_valid_global`,
   and `fnv_basis` against the `execute_ssa` oracle plus concrete
   expected values.
@@ -283,3 +283,14 @@ The first implementation campaign should answer these concrete questions before 
 6. Which frozen corpora can prove the new VM path agrees with the current bounded execution path where agreement is expected?
 
 Answer those through code and evidence before expanding into speculative subsystems.
+
+
+## Direct path cleanup (2026-10-05)
+
+VM-local migration is complete: all normal harness and differential tests
+consume the one compiler-owned direct emitter; `migrate.rs` has no remaining
+consumer and is deleted. The upstream research interpreter remains a
+read-only oracle. This does not claim upstream backend-registry retirement.
+Lossless shared-node encoding and immutable execution indexes reduce bytes
+and allocation churn; canonical execution requests propagate bounded fuel.
+See `docs/SSA-ENCODING.md` and sibling compiler efficiency evidence.

@@ -141,9 +141,8 @@ fn compiler_source_layer_executes_through_vm() {
         "unexpected source at {}",
         path.display()
     );
-    let (program, backend) =
-        harness::compile_to_backend(&source, "mncs-compiler/src/compiler/source.mncs").unwrap();
-    let admitted = mncs_vm::migrate::admit_research_artifact(&backend).unwrap();
+    let (program, admitted) =
+        harness::compile_direct(&source, "mncs-compiler/src/compiler/source.mncs").unwrap();
     // Generic exports without a seeded instance are recorded, not
     // silently dropped and not fatal to the artifact.
     assert!(

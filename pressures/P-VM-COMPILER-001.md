@@ -12,3 +12,16 @@
 - **VM work blocked or degraded:** canonical execution must pass through the temporary migration adapter; frozen interchange carries compiler internals until this lands.
 - **Temporary behavior:** `mncs-vm/src/migrate.rs` translates at the boundary, verifies upstream identity, and refuses anything it cannot translate. No semantics are synthesized.
 - **Removal condition:** delete `src/migrate.rs` and the `ResearchPayload` shape once the compiler emits `mncs.vm.artifact/1` and the admission tests pass against direct emission.
+
+
+## 2026-10-05 closure
+
+**Resolved for the canonical compiler-development path.** The pinned probe
+and VM test harness share `mncs-compiler/tools/vm_emit.rs`, directly emitting
+sealed `mncs.vm.artifact/1` from verified selected SSA. All five differential/
+generic/view/CLI/source test callers, the corpus harness, and the dump example
+have moved. `src/migrate.rs` and `ResearchPayload` are deleted: zero remaining
+callers, no compatibility conversion test without a real legacy consumer.
+Admission and oracle differentials pass on direct artifacts. Upstream backend
+registry promotion and research-runtime retirement are separate owner work;
+no claim is made that every upstream research consumer has disappeared.

@@ -487,8 +487,8 @@ src/artifact.rs    canonical mncs.vm.artifact/1 contract (externally
 src/admit.rs       loader/admission with typed refusals (Malformed,
                    UnsupportedFeature, UnresolvedFact,
                    IncompatibleContract, IdentityMismatch)
-src/migrate.rs     TEMPORARY adapter: research-bytecode payload in,
-                   canonical artifact out (removal: P-VM-COMPILER-001)
+src/harness.rs     direct compiler-owned emitter for development tests;
+                   no research artifact conversion remains
 src/value.rs       VM-owned values (int/bool/byte/float-bits/finite/
                    record/sequence/vector/mask) with wire marshalling
 src/engine.rs      reference interpreter: explicit frame stack,
@@ -555,3 +555,7 @@ ConditionalBranch, Failure. Everything else — floats ops,
 vectors, masks ops, views, SequenceCopy, RuntimeCheck (also
 Unsupported upstream) — is explicit `Unsupported`, never
 approximated.
+
+Current shared-node encoding, immutable admission indexes, and measurement
+contracts are specified in [SSA-ENCODING.md](SSA-ENCODING.md). Canonical
+request-envelope propagation is specified in [INTEGRATION.md](INTEGRATION.md).

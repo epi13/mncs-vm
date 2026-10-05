@@ -128,7 +128,7 @@ fn empty_function_identity_is_unresolved() {
 fn source_and_requirements_survive() {
     let admitted = compile_corpus("arith.mncs");
     let source: &ArtifactSource = &admitted.artifact.source;
-    assert_eq!(source.backend_name, "mncs-research-bytecode");
+    assert_eq!(source.backend_name, "mncs-vm-direct");
     assert_eq!(admitted.artifact.schema_version, ARTIFACT_SCHEMA_VERSION);
     assert_eq!(admitted.artifact.requirements.vm_contract, VM_CONTRACT);
     let _needs: &ArtifactRequirements = &admitted.artifact.requirements;

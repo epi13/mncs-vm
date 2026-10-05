@@ -23,6 +23,26 @@ pub struct ResourceEnvelope {
     pub limits: Vec<ResourceLimit>,
 }
 
+impl Default for ResourceEnvelope {
+    fn default() -> Self {
+        Self {
+            limits: [
+                ("steps", 1_000_000),
+                ("call_depth", 1024),
+                ("memory_cells", 10_000_000),
+                ("effects", 1024),
+                ("iterations", 1_000_000),
+            ]
+            .into_iter()
+            .map(|(dimension, limit)| ResourceLimit {
+                dimension: dimension.into(),
+                limit,
+            })
+            .collect(),
+        }
+    }
+}
+
 impl ResourceEnvelope {
     pub fn empty() -> Self {
         Self { limits: Vec::new() }

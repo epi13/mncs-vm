@@ -12,3 +12,10 @@
 - **VM work blocked or degraded:** none functionally; the adapter absorbs it. Cost is complexity and payload size, not correctness.
 - **Temporary behavior:** adapter reads export routing from program JSON and drops everything else; the canonical artifact never stores the program.
 - **Removal condition:** consume the code-only projection; delete program-JSON handling from the adapter.
+
+
+2026-10-05 scope update: historical `src/migrate.rs` reproductions refer to
+commit `a3ab04c`. That module is now deleted with zero consumers. Direct
+compiler-owned callable emission and lossless frozen SSA encoding remove
+this friction from the dedicated VM path; remaining upstream research
+backend behavior is not changed or claimed resolved by this cleanup.

@@ -75,6 +75,7 @@ pub enum CodeSection {
     /// Compiler-selected SSA, schema-checked at admission.
     MncsSelectedSsa {
         ssa_schema: String,
+        #[serde(with = "mncs_vm_artifact_codec")]
         module: mncs_model::SsaModule,
     },
 }
@@ -122,9 +123,31 @@ impl VmArtifact {
     /// Canonical bytes: deterministic serialization with the identity
     /// field blanked, so identity is content and nothing else.
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut clone = self.clone();
-        clone.artifact_id = String::new();
-        serde_json::to_vec(&clone).expect("artifact is serializable")
+        #[derive(Serialize)]
+        struct Content<'a> {
+            schema_version: &'a str,
+            source: &'a ArtifactSource,
+            callables: &'a [CallableEntry],
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            generic_entrypoints: &'a Vec<GenericEntrypoint>,
+            code: &'a CodeSection,
+            requirements: &'a ArtifactRequirements,
+            exports: &'a [String],
+            assumptions: &'a [String],
+            unsupported: &'a [String],
+        }
+        serde_json::to_vec(&Content {
+            schema_version: &self.schema_version,
+            source: &self.source,
+            callables: &self.callables,
+            generic_entrypoints: &self.generic_entrypoints,
+            code: &self.code,
+            requirements: &self.requirements,
+            exports: &self.exports,
+            assumptions: &self.assumptions,
+            unsupported: &self.unsupported,
+        })
+        .expect("artifact is serializable")
     }
 
     /// Bind (or rebind) the content identity after construction.

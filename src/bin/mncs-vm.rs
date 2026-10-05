@@ -13,14 +13,12 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use mncs_vm::admit::{admit, Admitted};
+use mncs_vm::admit::Admitted;
 use mncs_vm::capability::{CapabilityEnv, ConstProvider};
-use mncs_vm::debug::{
-    DebugConfig, DebugError, DebugStart, LiveEvent, StopTarget,
-};
+use mncs_vm::debug::{DebugConfig, DebugError, DebugStart, LiveEvent, StopTarget};
 use mncs_vm::engine::CallTarget;
 use mncs_vm::outcome::Outcome;
-use mncs_vm::resource::{ResourceEnvelope, ResourceLimit};
+use mncs_vm::resource::ResourceEnvelope;
 use mncs_vm::session::{CallSpec, Session};
 use mncs_vm::value::from_wire;
 
@@ -82,47 +80,65 @@ fn cmd_run(argv: &[String]) -> i32 {
         };
         match key {
             "--artifact" => {
-                let Some(path) = value(index) else { return usage_error("run --artifact needs a path") };
+                let Some(path) = value(index) else {
+                    return usage_error("run --artifact needs a path");
+                };
                 artifact_path = Some(PathBuf::from(path));
                 index += 2;
             }
             "--compile" => {
-                let Some(path) = value(index) else { return usage_error("run --compile needs a path") };
+                let Some(path) = value(index) else {
+                    return usage_error("run --compile needs a path");
+                };
                 compile_path = Some(PathBuf::from(path));
                 index += 2;
             }
             "--callable" => {
-                let Some(name) = value(index) else { return usage_error("run --callable needs MODULE::NAME") };
+                let Some(name) = value(index) else {
+                    return usage_error("run --callable needs MODULE::NAME");
+                };
                 callable = Some(name.to_owned());
                 index += 2;
             }
             "--function" => {
-                let Some(name) = value(index) else { return usage_error("run --function needs an identity") };
+                let Some(name) = value(index) else {
+                    return usage_error("run --function needs an identity");
+                };
                 function = Some(name.to_owned());
                 index += 2;
             }
             "--args" => {
-                let Some(path) = value(index) else { return usage_error("run --args needs a path") };
+                let Some(path) = value(index) else {
+                    return usage_error("run --args needs a path");
+                };
                 args_path = Some(PathBuf::from(path));
                 index += 2;
             }
             "--type-args" => {
-                let Some(path) = value(index) else { return usage_error("run --type-args needs a path") };
+                let Some(path) = value(index) else {
+                    return usage_error("run --type-args needs a path");
+                };
                 type_args_path = Some(PathBuf::from(path));
                 index += 2;
             }
             "--envelope" => {
-                let Some(path) = value(index) else { return usage_error("run --envelope needs a path") };
+                let Some(path) = value(index) else {
+                    return usage_error("run --envelope needs a path");
+                };
                 envelope_path = Some(PathBuf::from(path));
                 index += 2;
             }
             "--observe" => {
-                let Some(path) = value(index) else { return usage_error("run --observe needs a path") };
+                let Some(path) = value(index) else {
+                    return usage_error("run --observe needs a path");
+                };
                 observe_path = Some(PathBuf::from(path));
                 index += 2;
             }
             "--provider" => {
-                let Some(binding) = value(index) else { return usage_error("run --provider needs CAP=FILE") };
+                let Some(binding) = value(index) else {
+                    return usage_error("run --provider needs CAP=FILE");
+                };
                 let Some((capability, path)) = binding.split_once('=') else {
                     return usage_error("run --provider needs CAP=FILE");
                 };
@@ -130,7 +146,9 @@ fn cmd_run(argv: &[String]) -> i32 {
                 index += 2;
             }
             "--output" => {
-                let Some(path) = value(index) else { return usage_error("run --output needs a path") };
+                let Some(path) = value(index) else {
+                    return usage_error("run --output needs a path");
+                };
                 output_path = Some(PathBuf::from(path));
                 index += 2;
             }
@@ -243,14 +261,7 @@ fn usage_error(message: &str) -> i32 {
 #[derive(serde::Deserialize)]
 struct BatchCall {
     id: String,
-    #[serde(default)]
-    callable: Option<String>,
-    #[serde(default)]
-    function: Option<String>,
-    #[serde(default)]
-    args: Vec<mncs_model::ExecutionValue>,
-    #[serde(default)]
-    type_args: Vec<mncs_model::ExecutionTypeArgument>,
+    request: mncs_model::ExecutionRequest,
 }
 
 fn cmd_batch(argv: &[String]) -> i32 {
@@ -325,36 +336,15 @@ fn cmd_batch(argv: &[String]) -> i32 {
     let mut memory_cells_max: u64 = 0;
     let mut effects_total: u64 = 0;
     let mut call_depth_max: u64 = 0;
-    for call in &calls {
-        let target = match (&call.callable, &call.function) {
-            (Some(name), None) => match name.split_once("::") {
-                Some((module, callable_name)) => CallTarget::ByName {
-                    module: module.to_owned(),
-                    name: callable_name.to_owned(),
-                },
-                None => {
-                    return run_error(&format!("call {}: callable needs MODULE::NAME", call.id));
-                }
-            },
-            (None, Some(identity)) => CallTarget::ByFunction {
-                function: identity.clone(),
-            },
-            _ => {
-                return run_error(&format!(
-                    "call {}: needs exactly one of callable or function",
-                    call.id
-                ));
-            }
+    for call in calls.iter() {
+        let spec = match CallSpec::from_request(
+            call.request.clone(),
+            envelope_path.as_ref().map(|_| &envelope),
+        ) {
+            Ok(spec) => spec,
+            Err(reason) => return run_error(&format!("call {}: {reason}", call.id)),
         };
-        let (outcome, record) = session.call(
-            &caps,
-            CallSpec {
-                target,
-                arguments: call.args.clone(),
-                type_arguments: call.type_args.clone(),
-                envelope: envelope.clone(),
-            },
-        );
+        let (outcome, record) = session.call(&caps, spec);
         *kinds.entry(outcome.tag().to_owned()).or_insert(0) += 1;
         steps_total += record.usage.steps;
         steps_max = steps_max.max(record.usage.steps);
@@ -462,7 +452,7 @@ fn load_admitted(artifact: Option<&Path>, compile: Option<&Path>) -> Result<Admi
     if let Some(path) = artifact {
         let bytes = std::fs::read(path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        return admit(&bytes).map_err(|refusal| format!("admission refused: {refusal}"));
+        return mncs_vm::admit::admit_owned(bytes).map_err(|refusal| format!("admission refused: {refusal}"));
     }
     let path = compile.expect("one source is set");
     mncs_vm::harness::compile_file(path)
@@ -472,30 +462,7 @@ fn load_admitted(artifact: Option<&Path>, compile: Option<&Path>) -> Result<Admi
 /// Default CLI envelope: generous but explicit. The record carries
 /// these limits so the bound is evidence, not folklore.
 fn default_envelope() -> ResourceEnvelope {
-    ResourceEnvelope {
-        limits: vec![
-            ResourceLimit {
-                dimension: "steps".to_owned(),
-                limit: 1_000_000,
-            },
-            ResourceLimit {
-                dimension: "call_depth".to_owned(),
-                limit: 1_024,
-            },
-            ResourceLimit {
-                dimension: "memory_cells".to_owned(),
-                limit: 10_000_000,
-            },
-            ResourceLimit {
-                dimension: "effects".to_owned(),
-                limit: 1_024,
-            },
-            ResourceLimit {
-                dimension: "iterations".to_owned(),
-                limit: 1_000_000,
-            },
-        ],
-    }
+    ResourceEnvelope::default()
 }
 
 fn load_envelope(path: Option<&Path>) -> Result<ResourceEnvelope, String> {
@@ -724,13 +691,20 @@ impl DebugHandler {
             "terminate" => (self.op_terminate(&id, &params), false),
             "capabilities" => (self.op_capabilities(&id), false),
             "close" | "shutdown" => (ok_response(&id, serde_json::json!({})), true),
-            _ => (error_response(&id, "unknown_op", &format!("unknown op {op:?}")), false),
+            _ => (
+                error_response(&id, "unknown_op", &format!("unknown op {op:?}")),
+                false,
+            ),
         }
     }
 
     fn op_start(&mut self, id: &serde_json::Value, params: &serde_json::Value) -> String {
         if self.live.as_ref().is_some_and(|live| !live.is_finished()) {
-            return error_response(id, "execution_active", "one live execution per debug handle");
+            return error_response(
+                id,
+                "execution_active",
+                "one live execution per debug handle",
+            );
         }
         let admitted = match start_admitted(params) {
             Ok(admitted) => admitted,
@@ -746,7 +720,9 @@ impl DebugHandler {
             .transpose()
         {
             Ok(arguments) => arguments.unwrap_or_default(),
-            Err(error) => return error_response(id, "invalid_request", &format!("bad arguments: {error}")),
+            Err(error) => {
+                return error_response(id, "invalid_request", &format!("bad arguments: {error}"))
+            }
         };
         let envelope: ResourceEnvelope = match params
             .get("envelope")
@@ -754,7 +730,9 @@ impl DebugHandler {
             .transpose()
         {
             Ok(envelope) => envelope.unwrap_or_else(default_envelope),
-            Err(error) => return error_response(id, "invalid_request", &format!("bad envelope: {error}")),
+            Err(error) => {
+                return error_response(id, "invalid_request", &format!("bad envelope: {error}"))
+            }
         };
         let caps = match start_capabilities(params) {
             Ok(caps) => caps,
@@ -762,7 +740,9 @@ impl DebugHandler {
         };
         let config: DebugConfig = match params.get("debug").map(|value| serde_json::from_value(value.clone())).transpose() {
             Ok(config) => config.unwrap_or_default(),
-            Err(error) => return error_response(id, "invalid_request", &format!("bad debug config: {error}")),
+            Err(error) => {
+                return error_response(id, "invalid_request", &format!("bad debug config: {error}"))
+            }
         };
         // Process-lifetime by construction: the daemon owns few
         // executions and all state dies with it.
@@ -787,14 +767,23 @@ impl DebugHandler {
                 self.live = Some(live);
                 ok_response(id, serde_json::json!({"event": "stopped", "stop": stop}))
             }
-            DebugStart::Finished(finished) => ok_response(id, finish_json(&finished, include_stream)),
+            DebugStart::Finished(finished) => {
+                ok_response(id, finish_json(&finished, include_stream))
+            }
         }
     }
 
-    fn live_mut(&mut self, id: &serde_json::Value) -> Result<&mut Box<mncs_vm::debug::LiveExecution<'static>>, String> {
+    fn live_mut(
+        &mut self,
+        id: &serde_json::Value,
+    ) -> Result<&mut Box<mncs_vm::debug::LiveExecution<'static>>, String> {
         match self.live.as_mut() {
             Some(live) => Ok(live),
-            None => Err(error_response(id, "no_execution", "no live execution; send start first")),
+            None => Err(error_response(
+                id,
+                "no_execution",
+                "no live execution; send start first",
+            )),
         }
     }
 
@@ -819,7 +808,9 @@ impl DebugHandler {
             Ok(LiveEvent::Stopped(stop)) => {
                 ok_response(id, serde_json::json!({"event": "stopped", "stop": stop}))
             }
-            Ok(LiveEvent::Finished(finished)) => ok_response(id, finish_json(&finished, include_stream)),
+            Ok(LiveEvent::Finished(finished)) => {
+                ok_response(id, finish_json(&finished, include_stream))
+            }
             Err(error) => error_response(id, &debug_code(&error), &error.to_string()),
         }
     }
@@ -831,7 +822,11 @@ impl DebugHandler {
             if !live.is_finished() {
                 let token = params.get("token").and_then(serde_json::Value::as_str).unwrap_or("");
                 if !live_token_matches(live, token) {
-                    return error_response(id, "stale_token", "inspection needs the current continuation token");
+                    return error_response(
+                        id,
+                        "stale_token",
+                        "inspection needs the current continuation token",
+                    );
                 }
             }
         }
@@ -850,10 +845,17 @@ impl DebugHandler {
                     Err(error) => error_response(id, &debug_code(&error), &error.to_string()),
                 }
             }
-            "observation" => ok_response(id, serde_json::json!({"observation": live.inspect_observation()})),
+            "observation" => ok_response(
+                id,
+                serde_json::json!({"observation": live.inspect_observation()}),
+            ),
             "effects" => ok_response(id, serde_json::json!({"effects": live.inspect_effects()})),
             "stops" => ok_response(id, serde_json::json!({"stops": live.list_stops()})),
-            _ => error_response(id, "invalid_request", &format!("unknown inspect view {view:?}")),
+            _ => error_response(
+                id,
+                "invalid_request",
+                &format!("unknown inspect view {view:?}"),
+            ),
         }
     }
 
@@ -864,12 +866,18 @@ impl DebugHandler {
             Err(response) => return response,
         };
         if !live.is_finished() && !live_token_matches(live, token) {
-            return error_response(id, "stale_token", "bind_stop needs the current continuation token");
+            return error_response(
+                id,
+                "stale_token",
+                "bind_stop needs the current continuation token",
+            );
         }
         let target: StopTarget = match params.get("target").map(|value| serde_json::from_value(value.clone())).transpose() {
             Ok(Some(target)) => target,
             Ok(None) => return error_response(id, "invalid_request", "bind_stop needs a target"),
-            Err(error) => return error_response(id, "invalid_request", &format!("bad target: {error}")),
+            Err(error) => {
+                return error_response(id, "invalid_request", &format!("bad target: {error}"))
+            }
         };
         let name = params.get("id").and_then(serde_json::Value::as_str).map(str::to_owned);
         match live.bind_stop(target, name) {
@@ -885,7 +893,11 @@ impl DebugHandler {
             Err(response) => return response,
         };
         if !live.is_finished() && !live_token_matches(live, token) {
-            return error_response(id, "stale_token", "clear_stop needs the current continuation token");
+            return error_response(
+                id,
+                "stale_token",
+                "clear_stop needs the current continuation token",
+            );
         }
         let name = params.get("id").and_then(serde_json::Value::as_str).unwrap_or("");
         match live.clear_stop(name) {
@@ -937,11 +949,11 @@ fn live_token_matches(live: &mncs_vm::debug::LiveExecution<'static>, token: &str
 fn start_admitted(params: &serde_json::Value) -> Result<Admitted, String> {
     if let Some(path) = params.get("artifact_path").and_then(serde_json::Value::as_str) {
         let bytes = std::fs::read(path).map_err(|error| format!("cannot read {path}: {error}"))?;
-        return admit(&bytes).map_err(|refusal| format!("admission refused: {refusal}"));
+        return mncs_vm::admit::admit_owned(bytes).map_err(|refusal| format!("admission refused: {refusal}"));
     }
     if let Some(document) = params.get("artifact") {
         let bytes = serde_json::to_vec(document).map_err(|error| format!("bad artifact: {error}"))?;
-        return admit(&bytes).map_err(|refusal| format!("admission refused: {refusal}"));
+        return mncs_vm::admit::admit_owned(bytes).map_err(|refusal| format!("admission refused: {refusal}"));
     }
     if let Some(path) = params.get("compile").and_then(serde_json::Value::as_str) {
         return mncs_vm::harness::compile_file(Path::new(path))
