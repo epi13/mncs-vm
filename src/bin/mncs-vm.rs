@@ -49,8 +49,8 @@ fn print_help() {
     println!(
         "mncs-vm: canonical MNCS VM runner and live-debug driver\n\nusage:\n  \
          mncs-vm run --artifact FILE|--compile FILE --callable MODULE::NAME|--function ID\n    \
-         [--args FILE] [--envelope FILE] [--observe POLICY] [--provider CAP=FILE]...\n    \
-         [--output FILE]\n  mncs-vm compile FILE --output FILE\n  mncs-vm debug --stdio\n  mncs-vm debug --serve SOCKET\n  mncs-vm version"
+         [--args FILE] [--type-args FILE] [--envelope FILE] [--observe POLICY]\n    \
+         [--provider CAP=FILE]... [--output FILE]\n  mncs-vm compile FILE --output FILE\n  mncs-vm debug --stdio\n  mncs-vm debug --serve SOCKET\n  mncs-vm version"
     );
 }
 
@@ -64,6 +64,7 @@ fn cmd_run(argv: &[String]) -> i32 {
     let mut callable: Option<String> = None;
     let mut function: Option<String> = None;
     let mut args_path: Option<PathBuf> = None;
+    let mut type_args_path: Option<PathBuf> = None;
     let mut envelope_path: Option<PathBuf> = None;
     let mut observe_path: Option<PathBuf> = None;
     let mut providers: Vec<(String, PathBuf)> = Vec::new();
@@ -102,6 +103,11 @@ fn cmd_run(argv: &[String]) -> i32 {
             "--args" => {
                 let Some(path) = value(index) else { return usage_error("run --args needs a path") };
                 args_path = Some(PathBuf::from(path));
+                index += 2;
+            }
+            "--type-args" => {
+                let Some(path) = value(index) else { return usage_error("run --type-args needs a path") };
+                type_args_path = Some(PathBuf::from(path));
                 index += 2;
             }
             "--envelope" => {
@@ -157,6 +163,10 @@ fn cmd_run(argv: &[String]) -> i32 {
         Ok(arguments) => arguments,
         Err(message) => return run_error(&message),
     };
+    let type_arguments = match load_json_type_args(type_args_path.as_deref()) {
+        Ok(type_arguments) => type_arguments,
+        Err(message) => return run_error(&message),
+    };
     let envelope = match load_envelope(envelope_path.as_deref()) {
         Ok(envelope) => envelope,
         Err(message) => return run_error(&message),
@@ -179,7 +189,7 @@ fn cmd_run(argv: &[String]) -> i32 {
         let spec = CallSpec {
             target,
             arguments,
-            type_arguments: Vec::new(),
+            type_arguments,
             envelope,
         };
         match session.start_debug(&caps, spec, config) {
@@ -200,7 +210,7 @@ fn cmd_run(argv: &[String]) -> i32 {
         let spec = CallSpec {
             target,
             arguments,
-            type_arguments: Vec::new(),
+            type_arguments,
             envelope,
         };
         let (outcome, record) = session.call(&caps, spec);
@@ -342,6 +352,17 @@ fn load_json_array(path: Option<&Path>) -> Result<Vec<mncs_model::ExecutionValue
     let text =
         std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     serde_json::from_str(&text).map_err(|error| format!("bad args {}: {error}", path.display()))
+}
+
+fn load_json_type_args(
+    path: Option<&Path>,
+) -> Result<Vec<mncs_model::ExecutionTypeArgument>, String> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let text =
+        std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    serde_json::from_str(&text).map_err(|error| format!("bad type-args {}: {error}", path.display()))
 }
 
 fn load_policy(path: &Path) -> Result<mncs_model::ExecutionObservationPolicy, String> {

@@ -18,6 +18,24 @@
 //! `mncs.vm.artifact/1` directly (pressure P-VM-COMPILER-001).
 //! The adapter never synthesizes semantics: anything it cannot
 //! translate is a refusal, never a guess.
+//!
+//! Explicit removal path, now that direct emission exists
+//! (`mncs-compiler/tools/stage0-probe/src/vm_emit.rs`,
+//! `tools/test_vm_emit.py`):
+//!
+//! 1. Keep this adapter as the research-path consumer while the
+//!    in-process differential tests (`differential.rs`,
+//!    `compiler_source.rs`, `generics.rs`) prove VM/oracle
+//!    agreement on research bytes.
+//! 2. Port those differentials to direct bytes once a real compiler
+//!    suite runs green on direct emission (no behavior change: the
+//!    emitter mirrors this translation row for row).
+//! 3. Delete this module plus `ResearchPayload`, and remove the
+//!    research-backend link from `harness.rs` (leaving `compile_*`
+//!    only where tests still need an oracle compilation).
+//!
+//! Do not extend this adapter for new features: new lowering
+//! behavior belongs in the direct emitter.
 
 use mncs_model::BackendArtifact;
 

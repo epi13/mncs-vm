@@ -1,0 +1,10 @@
+mncs 0.18;
+
+module mncs.vmcorpus.generic.v1;
+
+fn first<N: Nat>(items: [i64; up_to N]) -> (result: i64) {
+    if items.len == 0 {
+        return 99;
+    }
+    return items[0];
+}

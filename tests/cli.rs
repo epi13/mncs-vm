@@ -75,6 +75,97 @@ fn run_executes_oneshot() {
 }
 
 #[test]
+fn run_with_type_args_executes_generic() {
+    // Seeded bytes via the in-process harness: the CLI only ever sees
+    // frozen artifact JSON plus JSON argument files.
+    let source = std::fs::read_to_string(corpus("generic.mncs")).unwrap();
+    let seeds = vec![mncs_model::HostGenericSeedRequest {
+        module: "mncs.vmcorpus.generic.v1".to_owned(),
+        function: "first".to_owned(),
+        type_arguments: vec![mncs_model::ExecutionTypeArgument::Nat { value: 4 }],
+    }];
+    let (_, backend) = mncs_vm::harness::compile_to_backend_seeded(&source, "generic.mncs", &seeds)
+        .expect("seeded compile");
+    let admitted = mncs_vm::migrate::admit_research_artifact(&backend).expect("admit");
+    assert_eq!(admitted.artifact.generic_entrypoints.len(), 1);
+    let stamp = std::process::id();
+    let artifact_path = std::env::temp_dir().join(format!("mncs-vm-cli-generic-{stamp}.json"));
+    let args_path = std::env::temp_dir().join(format!("mncs-vm-cli-generic-args-{stamp}.json"));
+    let targs_path = std::env::temp_dir().join(format!("mncs-vm-cli-generic-targs-{stamp}.json"));
+    std::fs::write(
+        &artifact_path,
+        serde_json::to_vec(&admitted.artifact).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        &args_path,
+        serde_json::to_string(&vec![serde_json::json!({"sequence": {"values": [
+            int_arg(11),
+            int_arg(22),
+        ]}})])
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(&targs_path, r#"[{"kind": "nat", "value": 4}]"#).unwrap();
+    let output = Command::new(bin())
+        .args([
+            "run",
+            "--artifact",
+            artifact_path.to_str().unwrap(),
+            "--callable",
+            "mncs.vmcorpus.generic.v1::first",
+            "--args",
+            args_path.to_str().unwrap(),
+            "--type-args",
+            targs_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn mncs-vm run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["outcome"]["kind"], "completed");
+    assert_eq!(document["record"]["returned"][0]["Integer"]["value"], 11);
+    assert!(document["record"]["callable_name"]
+        .as_str()
+        .unwrap()
+        .starts_with("mncs.vmcorpus.generic.v1::first<"));
+    // Uncompiled instantiation is a structured refusal, not a crash.
+    std::fs::write(&targs_path, r#"[{"kind": "nat", "value": 5}]"#).unwrap();
+    let output = Command::new(bin())
+        .args([
+            "run",
+            "--artifact",
+            artifact_path.to_str().unwrap(),
+            "--callable",
+            "mncs.vmcorpus.generic.v1::first",
+            "--args",
+            args_path.to_str().unwrap(),
+            "--type-args",
+            targs_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn mncs-vm run");
+    let _ = std::fs::remove_file(&artifact_path);
+    let _ = std::fs::remove_file(&args_path);
+    let _ = std::fs::remove_file(&targs_path);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["outcome"]["kind"], "invalid_request");
+    assert!(document["outcome"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("no compiled specialization"));
+}
+
+#[test]
 fn run_with_observe_retains_stream() {
     let policy_path = std::env::temp_dir().join(format!("mncs-vm-cli-policy-{}.json", std::process::id()));
     std::fs::write(
