@@ -100,8 +100,9 @@ impl ResourceUsage {
         self.call_depth = self.call_depth.saturating_sub(1);
     }
 
-    /// Charge live value cells (set, not cumulative: the engine
-    /// reports the current frame-held count after each allocation).
+    /// Charge live value cells. The engine releases dropped and
+    /// overwritten values, so the count tracks live held cells,
+    /// not allocation history; the peak is kept separately.
     pub fn note_cells(&mut self, cells: u64, envelope: &ResourceEnvelope) -> Result<(), Outcome> {
         self.memory_cells = self.memory_cells.saturating_add(cells);
         self.max_memory_cells = self.max_memory_cells.max(self.memory_cells);

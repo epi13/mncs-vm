@@ -68,3 +68,10 @@ fn nested_inline() -> (result: u64) {
     }
     return acc;
 }
+
+fn carry_blob(text: [byte; 1024]) -> (result: u64) {
+    iterate i up_to 100 carrying buf: [byte; 1024] = text {
+        next buf = buf;
+    }
+    return 100;
+}

@@ -232,6 +232,66 @@ fn iteration_accounting_counts_passes_not_block_visits() {
     }
 }
 
+fn run_vm_with_memory(
+    admitted: &mncs_vm::admit::Admitted,
+    function: &str,
+    args: Vec<mncs_model::ExecutionValue>,
+    memory_cells: u64,
+) -> Outcome {
+    let mut env = envelope();
+    env.limits.retain(|limit| limit.dimension != "memory_cells");
+    env.limits.push(ResourceLimit {
+        dimension: "memory_cells".to_owned(),
+        limit: memory_cells,
+    });
+    let caps = CapabilityEnv::empty();
+    let mut session = Session::open(admitted);
+    let (outcome, _) = session.call(
+        &caps,
+        CallSpec {
+            target: CallTarget::ByName {
+                module: MODULE.to_owned(),
+                name: function.to_owned(),
+            },
+            arguments: args,
+            type_arguments: Vec::new(),
+            envelope: env,
+        },
+    );
+    outcome
+}
+
+/// Memory accounting tracks live held cells, not allocation
+/// history: rebinding a carried 1025-cell value over 100 passes
+/// peaks near 3K live, while cumulative history would exceed 100K.
+#[test]
+fn memory_accounting_tracks_live_values_not_history() {
+    let (program, admitted) = program_and_admitted();
+    let blob = byte_seq(&vec![7u8; 1024]);
+    let (outcome, values) = compare(&program, &admitted, "carry_blob", vec![blob.clone()]);
+    assert_eq!(outcome, Outcome::Completed);
+    assert_eq!(values, vec![u64_arg(100)]);
+    assert_eq!(
+        run_vm_with_memory(&admitted, "carry_blob", vec![blob], 10_000),
+        Outcome::Completed,
+        "live peak must fit a 10K cell budget",
+    );
+    // Charging still happens: the 1025-cell argument alone
+    // exhausts a 100-cell budget at entry.
+    assert!(
+        matches!(
+            run_vm_with_memory(
+                &admitted,
+                "carry_blob",
+                vec![byte_seq(&vec![7u8; 1024])],
+                100
+            ),
+            Outcome::BudgetExhausted { dimension } if dimension == "memory_cells"
+        ),
+        "tiny budget must still exhaust at entry",
+    );
+}
+
 #[test]
 fn malformed_spans_fail_like_oracle() {
     let (program, admitted) = program_and_admitted();

@@ -226,10 +226,21 @@ impl<'a> Engine<'a> {
                 (parts, Ok(()))
             }
             Err(outcome) => {
+                let partial = Self::frame_cells(&parts.frame);
+                parts.state.usage.release_cells(partial);
                 parts.state.usage.exit_call();
                 (parts, Err(outcome))
             }
         }
+    }
+
+    /// Live value cells held by one frame (saturating).
+    fn frame_cells(frame: &Frame) -> u64 {
+        frame
+            .values
+            .values()
+            .map(Value::cells)
+            .fold(0, u64::saturating_add)
     }
 
     /// Bind entry arguments to function inputs by position with arity
@@ -309,6 +320,11 @@ impl<'a> Engine<'a> {
         }
         for (identity, value) in bound {
             let cells = value.cells();
+            // Rebinding drops the previous value: release its cells
+            // so accounting tracks live values, not history.
+            if let Some(old) = frame.values.remove(&identity) {
+                state.usage.release_cells(old.cells());
+            }
             state.usage.note_cells(cells, &self.envelope)?;
             frame.values.insert(identity, value);
         }
@@ -572,6 +588,10 @@ impl<'a> Engine<'a> {
                         };
                         driver.note_return(parts.frame.seq, &returned, "returned");
                     }
+                    // The callee frame dies here: release its held
+                    // cells so accounting tracks live values.
+                    let dead = Self::frame_cells(&parts.frame);
+                    parts.state.usage.release_cells(dead);
                     parts.frame = caller.frame;
                     // The call instruction sits at the restored ip;
                     // capture it before advancing past the call.
@@ -1469,6 +1489,8 @@ impl<'a> Engine<'a> {
                         Step::Jump(entry_block)
                     }
                     Err(outcome) => {
+                        let partial = Self::frame_cells(frame);
+                        state.usage.release_cells(partial);
                         state.usage.exit_call();
                         *frame = caller.frame;
                         Step::Halt(outcome)
