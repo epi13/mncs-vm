@@ -21,4 +21,8 @@ sha2 = "0.10"
 
 mncs-vm-artifact-codec = { path = "../mncs-compiler/tools/vm-artifact-codec" }
 
+[build-dependencies]
+sha2 = "0.10"
+serde_json = "1"
+
 [dev-dependencies]

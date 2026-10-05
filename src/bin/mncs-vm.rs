@@ -60,6 +60,11 @@ const SESSION_SCHEMA: &str = "mncs.vm.session/1";
 const MAX_SESSION_REQUEST_BYTES: u64 = 16 * 1024 * 1024;
 
 fn runtime_description() -> serde_json::Value {
+    let build_origin: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("OUT_DIR"),
+        "/mncs-vm-build-receipt.json"
+    )))
+    .expect("embedded VM build receipt");
     serde_json::json!({"schema_version":"mncs.vm.runtime-provider/1", "version":env!("CARGO_PKG_VERSION"),
         "artifact_schema":mncs_vm::artifact::ARTIFACT_SCHEMA_VERSION,
         "vm_contract":mncs_vm::artifact::VM_CONTRACT,
@@ -67,7 +72,8 @@ fn runtime_description() -> serde_json::Value {
         "execution_request_schema":"0.1", "session_schema":SESSION_SCHEMA,
         "debug_schema":"mncs.vm.debug/1", "debug_cli_schema":CLI_SCHEMA_VERSION,
         "modes":["run", "batch", "serve", "debug"],
-        "capability_binding":"serve is effect-free; explicit provider bindings remain run/debug-owned"})
+        "capability_binding":"serve is effect-free; explicit provider bindings remain run/debug-owned",
+        "build_origin":build_origin})
 }
 
 fn selected_artifact(argv: &[String]) -> Result<Admitted, String> {

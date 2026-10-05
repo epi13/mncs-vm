@@ -8,6 +8,108 @@
       "kind": "execution-runtime",
       "stability": "experimental",
       "version": "0.1.0"
+    },
+    {
+      "artifact_contract": {
+        "artifact_schema": "mncs.vm.artifact/1",
+        "debug_schema": "mncs.vm.debug/1",
+        "execution_request_schema": "0.1",
+        "session_schema": "mncs.vm.session/1",
+        "ssa_schema": "0.5",
+        "vm_contract": "mncs.vm/0.1"
+      },
+      "contract": "vm-runtime",
+      "effects": [
+        "read"
+      ],
+      "fingerprint_sources": [
+        "src/",
+        "python/mncs_vm_client/",
+        "tools/provider.py"
+      ],
+      "invocation": {
+        "fixed_argv": [
+          "inspect"
+        ],
+        "kind": "python",
+        "path": "tools/provider.py",
+        "toolchain": {
+          "path": "target/debug/mncs-vm",
+          "repository": "mncs-vm"
+        },
+        "toolchain_env": "MNCS_VM_BIN"
+      },
+      "kind": "execution-runtime-provider",
+      "stability": "experimental",
+      "version": "1"
+    },
+    {
+      "artifact_contract": {
+        "artifact_schema": "mncs.vm.artifact/1",
+        "debug_schema": "mncs.vm.debug/1",
+        "execution_request_schema": "0.1",
+        "session_schema": "mncs.vm.session/1",
+        "ssa_schema": "0.5",
+        "vm_contract": "mncs.vm/0.1"
+      },
+      "contract": "vm-admission",
+      "effects": [
+        "read"
+      ],
+      "fingerprint_sources": [
+        "src/",
+        "python/mncs_vm_client/",
+        "tools/provider.py"
+      ],
+      "invocation": {
+        "fixed_argv": [
+          "admit"
+        ],
+        "kind": "python",
+        "path": "tools/provider.py",
+        "toolchain": {
+          "path": "target/debug/mncs-vm",
+          "repository": "mncs-vm"
+        },
+        "toolchain_env": "MNCS_VM_BIN"
+      },
+      "kind": "execution-runtime-provider",
+      "stability": "experimental",
+      "version": "1"
+    },
+    {
+      "artifact_contract": {
+        "artifact_schema": "mncs.vm.artifact/1",
+        "debug_schema": "mncs.vm.debug/1",
+        "execution_request_schema": "0.1",
+        "session_schema": "mncs.vm.session/1",
+        "ssa_schema": "0.5",
+        "vm_contract": "mncs.vm/0.1"
+      },
+      "contract": "vm-call",
+      "effects": [
+        "execute"
+      ],
+      "fingerprint_sources": [
+        "src/",
+        "python/mncs_vm_client/",
+        "tools/provider.py"
+      ],
+      "invocation": {
+        "fixed_argv": [
+          "call"
+        ],
+        "kind": "python",
+        "path": "tools/provider.py",
+        "toolchain": {
+          "path": "target/debug/mncs-vm",
+          "repository": "mncs-vm"
+        },
+        "toolchain_env": "MNCS_VM_BIN"
+      },
+      "kind": "execution-runtime-provider",
+      "stability": "experimental",
+      "version": "1"
     }
   ],
   "dependencies": [],
@@ -18,6 +120,6 @@
   "purpose": "Canonical machine-native virtual machine and execution runtime for MNCS bytecode: deterministic core execution preserving explicit contracts, effects, capabilities, bounds, identity, and evidence.",
   "repository": "mncs-vm",
   "schema_version": "mncs.project-view/1",
-  "source_identity": "sha256:34c9f402358fe8b0e3451e83cab646c707503d6adc2d4fc8249c75c2eaac07b8",
+  "source_identity": "sha256:2e395376479caf031278cc030b90da444b8ab6529566bf9c046c923db7a7c92e",
   "structure": {}
 }

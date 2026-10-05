@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import selectors
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -26,15 +27,112 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
 
 
+def validate_toolchain_executables(configuration):
+    tools = configuration.get('toolchain_executables') if isinstance(configuration, dict) else None
+    if not isinstance(tools, dict) or set(tools) != {'cargo', 'rustc'}:
+        return ['toolchain-executable-identities']
+    mismatches = []
+    for name, identity in tools.items():
+        try:
+            if not isinstance(identity, dict):
+                raise ValueError('invalid identity')
+            configured_path = identity['configured_path']
+            configured = Path(configured_path)
+            if not configured.is_absolute() and configured.parent == Path('.'):
+                configured = Path(shutil.which(configured_path) or configured_path)
+            configured = configured.resolve(strict=True)
+            resolved = Path(identity['resolved_path']).resolve(strict=True)
+            if configured != resolved or sha(resolved) != identity['sha256']:
+                mismatches.append('build-tool:' + name)
+        except (OSError, KeyError, TypeError, ValueError):
+            mismatches.append('build-tool:' + name)
+    return mismatches
+
+
 def inspect_runtime(executable: Path):
     executable = Path(executable).resolve()
     result = subprocess.run([str(executable), 'describe'], capture_output=True, text=True, timeout=10, check=True)
     description = json.loads(result.stdout)
     if description.get('schema_version') != 'mncs.vm.runtime-provider/1':
         raise RuntimeError('selected executable is not a VM provider')
+    executable_sha256 = sha(executable)
+    embedded = description.get('build_origin')
+    origin = {'status': 'unknown', 'assurance': 'no embedded provider build receipt',
+              'executable_sha256': executable_sha256}
+    if isinstance(embedded, dict) and isinstance(embedded.get('receipt'), dict):
+        receipt = embedded['receipt']
+        inputs = receipt.get('source_inputs')
+        closures = receipt.get('dependency_closure')
+        mismatches = []
+        if (receipt.get('schema_version') != 'mncs.vm-build-receipt/1'
+                or embedded.get('identity') != 'sha256:' + digest(receipt)
+                or not isinstance(inputs, dict) or not isinstance(closures, list)):
+            mismatches.append('receipt-integrity')
+        else:
+            mismatches.extend(validate_toolchain_executables(receipt.get('build_configuration')))
+            roots = [Path(item['checkout']).resolve() for item in closures
+                     if isinstance(item, dict) and isinstance(item.get('checkout'), str)]
+            closures_by_name = {item.get('repository'): item for item in closures if isinstance(item, dict)}
+            for name, closure in closures_by_name.items():
+                root = Path(closure['checkout']).resolve()
+                try:
+                    revision = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=5, check=True).stdout.strip()
+                    if revision != closure.get('revision'):
+                        mismatches.append('source-revision:' + str(name))
+                except (OSError, subprocess.SubprocessError):
+                    mismatches.append('source-revision-unavailable:' + str(name))
+            dirty_inputs = {}
+            for root in roots:
+                try:
+                    rows = subprocess.run(['git', '-C', str(root), 'status', '--porcelain=v1', '--untracked-files=all'], capture_output=True, text=True, timeout=10, check=True).stdout.splitlines()
+                except (OSError, subprocess.SubprocessError):
+                    mismatches.append('dirty-checkout-unavailable:' + str(root))
+                    continue
+                changed = {line[3:].rsplit(' -> ', 1)[-1] for line in rows if len(line) >= 4}
+                for raw_path, expected in inputs.items():
+                    path = Path(raw_path).resolve()
+                    if path.is_relative_to(root) and path.relative_to(root).as_posix() in changed:
+                        dirty_inputs[str(path)] = expected
+            if digest(dirty_inputs) != receipt.get('dirty_content_identity') or len(dirty_inputs) != receipt.get('dirty_input_count'):
+                mismatches.append('dirty-checkout-identity')
+            for raw_path, expected in inputs.items():
+                try:
+                    path = Path(raw_path).resolve(strict=True)
+                    if not any(path.is_relative_to(root) for root in roots):
+                        mismatches.append('input-outside-selected-closure')
+                        continue
+                    if sha(path) != expected:
+                        mismatches.append(raw_path)
+                except (OSError, ValueError, TypeError):
+                    mismatches.append(raw_path)
+            input_identity = digest(inputs)
+            if input_identity != receipt.get('source_inputs_identity'):
+                mismatches.append('source-input-identity')
+        receipt_identity = embedded.get('identity')
+        origin = {
+            'status': 'stale-inputs' if mismatches else 'matches-embedded-inputs',
+            'receipt_schema': receipt.get('schema_version'),
+            'receipt_identity': receipt_identity,
+            'source_revisions': receipt.get('source_revisions', {}),
+            'dirty_content_identity': receipt.get('dirty_content_identity'),
+            'dirty_input_count': receipt.get('dirty_input_count'),
+            'source_inputs_identity': receipt.get('source_inputs_identity'),
+            'source_input_count': len(inputs) if isinstance(inputs, dict) else 0,
+            'dependency_closure': receipt.get('dependency_closure', []),
+            'build_configuration': receipt.get('build_configuration', {}),
+            'mismatch_count': len(mismatches),
+            'mismatches': mismatches[:32],
+            'assurance': receipt.get('assurance', 'unknown'),
+            'executable_sha256': executable_sha256,
+        }
+        origin['runtime_build_identity'] = digest({
+            'kind': 'mncs.vm.runtime-build/1',
+            'receipt_identity': receipt_identity,
+            'executable_sha256': executable_sha256,
+        })
     return {'schema_version': 'mncs.vm.selected-runtime/1', 'executable': str(executable),
-            'executable_sha256': sha(executable), 'contract': description,
-            'build_origin': 'unknown; exact executable bytes observed'}
+            'executable_sha256': executable_sha256, 'contract': description,
+            'build_origin': origin}
 
 
 class Session:

@@ -118,6 +118,39 @@
           },
           "toolchain_env": "MNCS_VM_BIN"
         }
+      },
+      {
+        "contract": "vm-build",
+        "version": "1",
+        "kind": "build-provider",
+        "stability": "experimental",
+        "effects": [
+          "write"
+        ],
+        "artifact_contract": {
+          "receipt_schema": "mncs.vm-build-receipt/1",
+          "runtime_schema": "mncs.vm.runtime-provider/1"
+        },
+        "fingerprint_sources": [
+          "Cargo.toml",
+          "Cargo.lock",
+          "build.rs",
+          "src/",
+          "python/mncs_vm_client/",
+          "tools/provider.py"
+        ],
+        "invocation": {
+          "kind": "python",
+          "path": "tools/provider.py",
+          "fixed_argv": [
+            "build"
+          ],
+          "toolchain": {
+            "repository": "mncs-vm",
+            "path": "target/debug/mncs-vm"
+          },
+          "toolchain_env": "MNCS_VM_BIN"
+        }
       }
     ],
     "consumes": [],
