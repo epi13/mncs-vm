@@ -10,9 +10,8 @@
 //! is the reference execution core over admitted artifacts. [`capability`]
 //! enforces authority at the effect boundary; [`resource`] enforces
 //! budgets; [`outcome`] and [`evidence`] make results machine-readable.
-//! [`migrate`] is the explicit temporary adapter that consumes current
-//! research-bytecode payloads (read-only upstream) until the compiler
-//! emits the canonical artifact directly.
+//! Development harnesses use the compiler-owned direct emitter; no research
+//! artifact conversion remains in this crate.
 
 pub mod admit;
 pub mod artifact;
@@ -21,7 +20,6 @@ pub mod debug;
 pub mod engine;
 pub mod evidence;
 pub mod harness;
-pub mod migrate;
 pub mod outcome;
 pub mod resource;
 pub mod session;

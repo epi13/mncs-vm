@@ -516,10 +516,19 @@ dependencies = [
  "mncs-compiler",
  "mncs-model",
  "mncs-syntax",
+ "mncs-vm-artifact-codec",
  "serde",
  "serde_json",
  "sha2",
  "thiserror",
+]
+
+[[package]]
+name = "mncs-vm-artifact-codec"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

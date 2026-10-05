@@ -91,9 +91,8 @@ fn seeded_artifact(
     let path = compiler_source_path();
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|_| panic!("sibling compiler source missing: {}", path.display()));
-    let (program, backend) =
-        harness::compile_to_backend_seeded(&source, LOCATOR, seeds).expect("seeded compile");
-    let admitted = mncs_vm::migrate::admit_research_artifact(&backend).expect("admit");
+    let (program, admitted) =
+        harness::compile_direct_seeded(&source, LOCATOR, seeds).expect("seeded compile");
     (program, admitted)
 }
 
@@ -127,16 +126,12 @@ fn compare_generic(
     let mut session = Session::open(admitted);
     let (outcome, record) = session.call(
         &caps,
-        CallSpec {
-            target: CallTarget::ByName {
-                module: MODULE.to_owned(),
-                name: function.to_owned(),
-            },
-            arguments: args,
-            type_arguments,
-            envelope: envelope(),
-        },
+        CallSpec::from_request(request, None).expect("canonical request"),
     );
+    assert!(record
+        .resource_limits
+        .iter()
+        .any(|l| l.dimension == "steps" && l.limit == 50_000));
 
     assert_eq!(
         outcome.tag(),

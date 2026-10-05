@@ -52,8 +52,13 @@ fn first_instruction(corpus_name: &str, name_hint: &str) -> String {
 
 #[test]
 fn run_executes_oneshot() {
-    let args_path = std::env::temp_dir().join(format!("mncs-vm-cli-args-{}.json", std::process::id()));
-    std::fs::write(&args_path, serde_json::to_string(&vec![int_arg(3), int_arg(4)]).unwrap()).unwrap();
+    let args_path =
+        std::env::temp_dir().join(format!("mncs-vm-cli-args-{}.json", std::process::id()));
+    std::fs::write(
+        &args_path,
+        serde_json::to_string(&vec![int_arg(3), int_arg(4)]).unwrap(),
+    )
+    .unwrap();
     let output = Command::new(bin())
         .args([
             "run",
@@ -84,9 +89,8 @@ fn run_with_type_args_executes_generic() {
         function: "first".to_owned(),
         type_arguments: vec![mncs_model::ExecutionTypeArgument::Nat { value: 4 }],
     }];
-    let (_, backend) = mncs_vm::harness::compile_to_backend_seeded(&source, "generic.mncs", &seeds)
+    let (_, admitted) = mncs_vm::harness::compile_direct_seeded(&source, "generic.mncs", &seeds)
         .expect("seeded compile");
-    let admitted = mncs_vm::migrate::admit_research_artifact(&backend).expect("admit");
     assert_eq!(admitted.artifact.generic_entrypoints.len(), 1);
     let stamp = std::process::id();
     let artifact_path = std::env::temp_dir().join(format!("mncs-vm-cli-generic-{stamp}.json"));
@@ -191,12 +195,9 @@ fn batch_executes_many_calls_with_summary() {
     std::fs::write(
         &calls_path,
         serde_json::to_string(&serde_json::json!([
-            {"id": "add", "callable": "mncs.vmcorpus.arith.v1::add2",
-             "args": [int_arg(3), int_arg(4)]},
-            {"id": "mul", "callable": "mncs.vmcorpus.arith.v1::muladd",
-             "args": [int_arg(2), int_arg(3), int_arg(4)]},
-            {"id": "bogus", "callable": "mncs.vmcorpus.arith.v1::missing",
-             "args": []},
+            {"id": "add", "request": {"schema_version":"0.1", "target":{"module":"mncs.vmcorpus.arith.v1","function":"add2"}, "step_budget":12345, "arguments":[int_arg(3),int_arg(4)]}},
+            {"id": "mul", "request": {"schema_version":"0.1", "target":{"module":"mncs.vmcorpus.arith.v1","function":"muladd"}, "step_budget":12345, "arguments":[int_arg(2),int_arg(3),int_arg(4)]}},
+            {"id": "bogus", "request": {"schema_version":"0.1", "target":{"module":"mncs.vmcorpus.arith.v1","function":"missing"}, "step_budget":12345, "arguments":[]}},
         ]))
         .unwrap(),
     )
@@ -229,6 +230,11 @@ fn batch_executes_many_calls_with_summary() {
     assert!(document["summary"]["steps_total"].as_u64().unwrap() > 0);
     let results = document["results"].as_array().unwrap();
     assert_eq!(results[0]["id"], "add");
+    assert!(results[0]["record"]["resource_limits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|limit| limit["dimension"] == "steps" && limit["limit"] == 12345));
     assert_eq!(results[0]["record"]["returned"][0]["Integer"]["value"], 7);
     assert_eq!(results[1]["record"]["returned"][0]["Integer"]["value"], 10);
     assert_eq!(results[2]["outcome"]["kind"], "invalid_request");
@@ -252,8 +258,13 @@ fn run_with_observe_retains_stream() {
         .unwrap(),
     )
     .unwrap();
-    let args_path = std::env::temp_dir().join(format!("mncs-vm-cli-args2-{}.json", std::process::id()));
-    std::fs::write(&args_path, serde_json::to_string(&vec![int_arg(10)]).unwrap()).unwrap();
+    let args_path =
+        std::env::temp_dir().join(format!("mncs-vm-cli-args2-{}.json", std::process::id()));
+    std::fs::write(
+        &args_path,
+        serde_json::to_string(&vec![int_arg(10)]).unwrap(),
+    )
+    .unwrap();
     let output = Command::new(bin())
         .args([
             "run",
@@ -308,7 +319,13 @@ fn stdio_debug_session_stops_inspects_resumes() {
         serde_json::from_str(&line).expect("response JSON")
     };
 
-    let response = roundtrip(&mut stdin, &mut lines, 1, "capabilities", serde_json::json!({}));
+    let response = roundtrip(
+        &mut stdin,
+        &mut lines,
+        1,
+        "capabilities",
+        serde_json::json!({}),
+    );
     assert_eq!(response["ok"], true);
     assert_eq!(response["result"]["contract"], "mncs.vm.debug/1");
 
@@ -354,11 +371,23 @@ fn stdio_debug_session_stops_inspects_resumes() {
     assert!(response["result"]["stack"]["frames"][0]["values"].as_array().unwrap().len() >= 2);
 
     // A stale token is refused without disturbing the live stop.
-    let response = roundtrip(&mut stdin, &mut lines, 4, "resume", serde_json::json!({"token": "dbg:deadbeefdead:9:zzz"}));
+    let response = roundtrip(
+        &mut stdin,
+        &mut lines,
+        4,
+        "resume",
+        serde_json::json!({"token": "dbg:deadbeefdead:9:zzz"}),
+    );
     assert_eq!(response["ok"], false);
     assert_eq!(response["error"]["code"], "bad_token");
 
-    let response = roundtrip(&mut stdin, &mut lines, 5, "resume", serde_json::json!({"token": token}));
+    let response = roundtrip(
+        &mut stdin,
+        &mut lines,
+        5,
+        "resume",
+        serde_json::json!({"token": token}),
+    );
     assert_eq!(response["ok"], true, "{response}");
     assert_eq!(response["result"]["event"], "finished");
     assert_eq!(response["result"]["outcome"]["kind"], "completed");
@@ -490,7 +519,10 @@ fn socket_daemon_reconnects_to_live_execution() {
         assert_eq!(responses[0]["result"]["record"]["returned"][0]["Integer"]["value"], 13);
     }
 
-    let _ = communicate(&stream, vec![serde_json::json!({"id": 7, "op": "shutdown", "params": {}})]);
+    let _ = communicate(
+        &stream,
+        vec![serde_json::json!({"id": 7, "op": "shutdown", "params": {}})],
+    );
     drop(stream);
     let status = child.wait().expect("daemon exit");
     assert!(status.success());
@@ -502,14 +534,26 @@ fn compile_then_run_matches_direct_compile() {
     let artifact_path =
         std::env::temp_dir().join(format!("mncs-vm-cli-artifact-{}.json", std::process::id()));
     let output = Command::new(bin())
-        .args(["compile", &corpus("arith.mncs"), "--output", artifact_path.to_str().unwrap()])
+        .args([
+            "compile",
+            &corpus("arith.mncs"),
+            "--output",
+            artifact_path.to_str().unwrap(),
+        ])
         .output()
         .expect("spawn mncs-vm compile");
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let compiled: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(compiled["artifact_id"].as_str().is_some_and(|id| id.starts_with("sha256:")));
-    let args_path = std::env::temp_dir().join(format!("mncs-vm-cli-args3-{}.json", std::process::id()));
-    std::fs::write(&args_path, serde_json::to_string(&vec![int_arg(3), int_arg(4)]).unwrap()).unwrap();
+    assert!(compiled["artifact_id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("sha256:")));
+    let args_path =
+        std::env::temp_dir().join(format!("mncs-vm-cli-args3-{}.json", std::process::id()));
+    std::fs::write(
+        &args_path,
+        serde_json::to_string(&vec![int_arg(3), int_arg(4)]).unwrap(),
+    )
+    .unwrap();
     let via_artifact = Command::new(bin())
         .args([
             "run",

@@ -123,9 +123,8 @@ fn program_and_admitted() -> (mncs_model::Program, mncs_vm::admit::Admitted) {
     path.push("corpus");
     path.push("views.mncs");
     let source = std::fs::read_to_string(&path).unwrap();
-    let (program, backend) =
-        mncs_vm::harness::compile_to_backend(&source, "views.mncs").expect("corpus compiles");
-    let admitted = mncs_vm::migrate::admit_research_artifact(&backend).expect("admit");
+    let (program, admitted) =
+        mncs_vm::harness::compile_direct(&source, "views.mncs").expect("corpus compiles");
     (program, admitted)
 }
 

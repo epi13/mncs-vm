@@ -112,8 +112,8 @@ pub(crate) struct LiveParts {
 pub struct Engine<'a> {
     admitted: &'a Admitted,
     module: &'a SsaModule,
-    functions: BTreeMap<String, usize>,
-    blocks: Vec<BTreeMap<String, usize>>,
+    functions: &'a BTreeMap<String, usize>,
+    blocks: &'a [BTreeMap<String, usize>],
     envelope: ResourceEnvelope,
     caps: &'a CapabilityEnv,
 }
@@ -125,24 +125,11 @@ impl<'a> Engine<'a> {
         caps: &'a CapabilityEnv,
     ) -> Option<Self> {
         let module = admitted.ssa_module()?;
-        let mut functions = BTreeMap::new();
-        let mut blocks = Vec::new();
-        for (index, function) in module.functions.iter().enumerate() {
-            // Calls name the semantic identity while admission binds
-            // the function identity; index both to the same code.
-            functions.insert(function.identity.0.clone(), index);
-            functions.insert(function.semantic_identity.0.clone(), index);
-            let mut map = BTreeMap::new();
-            for (block_index, block) in function.blocks.iter().enumerate() {
-                map.insert(block.identity.0.clone(), block_index);
-            }
-            blocks.push(map);
-        }
         Some(Self {
             admitted,
             module,
-            functions,
-            blocks,
+            functions: &admitted.execution_functions,
+            blocks: &admitted.execution_blocks,
             envelope,
             caps,
         })
@@ -220,7 +207,12 @@ impl<'a> Engine<'a> {
         if let Err(outcome) = parts.state.usage.enter_call(&self.envelope) {
             return (parts, Err(outcome));
         }
-        match self.bind_entry(&mut parts.state, function_index, &mut parts.frame, arguments) {
+        match self.bind_entry(
+            &mut parts.state,
+            function_index,
+            &mut parts.frame,
+            arguments,
+        ) {
             Ok(entry_block) => {
                 parts.frame.block = entry_block;
                 (parts, Ok(()))
@@ -349,17 +341,19 @@ impl<'a> Engine<'a> {
         let mut resumed_mid_block = false;
         loop {
             let function_index = parts.frame.function;
-            let block_id = parts.frame.block.clone();
             let depth = parts.stack.len();
-            let Some(&block_index) = self.blocks[function_index].get(&block_id) else {
+            let Some(&block_index) = self.blocks[function_index].get(&parts.frame.block) else {
                 return self.terminal(
                     parts,
                     dbg,
                     Outcome::Trap {
-                        detail: format!("unknown block {block_id}"),
+                        detail: format!("unknown block {}", parts.frame.block),
                     },
                 );
             };
+            let block_id = &self.module.functions[function_index].blocks[block_index]
+                .identity
+                .0;
             // A function-entry suspension already ran block entry for
             // the callee entry block; the resumed loop skips it once
             // so iteration accounting and events run exactly once.
@@ -404,11 +398,7 @@ impl<'a> Engine<'a> {
                         return DriveExit::Suspended(Box::new(SuspendRequest {
                             reasons,
                             safe_point,
-                            position: (
-                                parts.frame.seq,
-                                parts.frame.block.clone(),
-                                parts.frame.ip,
-                            ),
+                            position: (parts.frame.seq, parts.frame.block.clone(), parts.frame.ip),
                             kinds,
                             pending_terminal: None,
                         }));
@@ -490,11 +480,9 @@ impl<'a> Engine<'a> {
                                     }
                                     parts.frame.block = target.clone();
                                     parts.frame.ip = 0;
-                                    if let Err(outcome) = self.enter_block(
-                                        &mut parts.frame,
-                                        callee_function,
-                                        &target,
-                                    ) {
+                                    if let Err(outcome) =
+                                        self.enter_block(&mut parts.frame, callee_function, &target)
+                                    {
                                         return self.terminal(parts, dbg, outcome);
                                     }
                                     driver.note_block_enter(new_depth, &target);
@@ -579,9 +567,11 @@ impl<'a> Engine<'a> {
                             SsaTerminator::Return { values } => values
                                 .iter()
                                 .filter_map(|name| {
-                                    parts.frame.values.get(&name.0).map(|value| {
-                                        (name.0.clone(), value.clone())
-                                    })
+                                    parts
+                                        .frame
+                                        .values
+                                        .get(&name.0)
+                                        .map(|value| (name.0.clone(), value.clone()))
                                 })
                                 .collect(),
                             _ => Vec::new(),
@@ -679,16 +669,16 @@ impl<'a> Engine<'a> {
         match kind {
             SuspendKind::EffectBefore(reasons) => {
                 let kinds = DebugDriver::suspend_kinds("effect_before", &reasons);
-                let safe_point =
-                    driver.effect_safe_point(parts.frame.seq, depth, parts.state.usage.steps, "before");
+                let safe_point = driver.effect_safe_point(
+                    parts.frame.seq,
+                    depth,
+                    parts.state.usage.steps,
+                    "before",
+                );
                 DriveExit::Suspended(Box::new(SuspendRequest {
                     reasons,
                     safe_point,
-                    position: (
-                        parts.frame.seq,
-                        parts.frame.block.clone(),
-                        parts.frame.ip,
-                    ),
+                    position: (parts.frame.seq, parts.frame.block.clone(), parts.frame.ip),
                     kinds,
                     pending_terminal: None,
                 }))
@@ -704,15 +694,15 @@ impl<'a> Engine<'a> {
                 // Record the arrival at the completed instruction,
                 // then advance past it: resume continues at the next
                 // operation and can never dispatch twice.
-                let position = (
-                    parts.frame.seq,
-                    parts.frame.block.clone(),
-                    parts.frame.ip,
-                );
+                let position = (parts.frame.seq, parts.frame.block.clone(), parts.frame.ip);
                 parts.frame.ip += 1;
                 let kinds = DebugDriver::suspend_kinds("effect_after", &reasons);
-                let safe_point =
-                    driver.effect_safe_point(parts.frame.seq, depth, parts.state.usage.steps, "after");
+                let safe_point = driver.effect_safe_point(
+                    parts.frame.seq,
+                    depth,
+                    parts.state.usage.steps,
+                    "after",
+                );
                 DriveExit::Suspended(Box::new(SuspendRequest {
                     reasons,
                     safe_point,
@@ -750,11 +740,7 @@ impl<'a> Engine<'a> {
         DriveExit::Suspended(Box::new(SuspendRequest {
             reasons,
             safe_point,
-            position: (
-                parts.frame.seq,
-                parts.frame.block.clone(),
-                parts.frame.ip,
-            ),
+            position: (parts.frame.seq, parts.frame.block.clone(), parts.frame.ip),
             kinds: vec!["terminal".to_owned()],
             pending_terminal: Some(outcome),
         }))
@@ -775,29 +761,24 @@ impl<'a> Engine<'a> {
         block_id: &str,
     ) -> Result<(), Outcome> {
         let function = &self.module.functions[function_index];
-        for region in &function.bounded_iterations {
+        for (region_index, region) in function.bounded_iterations.iter().enumerate() {
             if region.body_entry.0 != block_id {
                 continue;
             }
-            // A new pass of this region restarts every strictly
-            // nested loop: each activation gets the full declared
-            // bound instead of inheriting a sibling pass's count.
-            let nested: Vec<String> = function
-                .bounded_iterations
-                .iter()
-                .filter(|other| {
-                    other.identity != region.identity
-                        && region
-                            .body_blocks
-                            .iter()
-                            .any(|body| body.0 == other.body_entry.0)
-                })
-                .map(|other| other.identity.0.clone())
-                .collect();
-            for identity in nested {
-                frame.iters.remove(&identity);
+            // Reset strictly nested activations using immutable admitted
+            // indexes; no region scans or temporary identity copies per pass.
+            for nested in &self.admitted.execution_nested_iterations[function_index][region_index] {
+                frame
+                    .iters
+                    .remove(&function.bounded_iterations[*nested].identity.0);
             }
-            let count = frame.iters.entry(region.identity.0.clone()).or_insert(0);
+            if !frame.iters.contains_key(&region.identity.0) {
+                frame.iters.insert(region.identity.0.clone(), 0);
+            }
+            let count = frame
+                .iters
+                .get_mut(&region.identity.0)
+                .expect("inserted iteration counter");
             *count += 1;
             if *count > u64::from(region.bound) {
                 return Err(Outcome::BudgetExhausted {
@@ -1595,8 +1576,12 @@ impl<'a> Engine<'a> {
                             frame.values.insert(output.identity.0.clone(), value);
                         }
                         if let Some(driver) = dbg.as_deref_mut() {
-                            let reasons =
-                                driver.after_effect(stack.len(), &frame.block, instruction, "completed");
+                            let reasons = driver.after_effect(
+                                stack.len(),
+                                &frame.block,
+                                instruction,
+                                "completed",
+                            );
                             if !reasons.is_empty() {
                                 return Step::Suspend(SuspendKind::EffectAfter(reasons));
                             }
@@ -1609,7 +1594,12 @@ impl<'a> Engine<'a> {
                         // honestly; stop reasons are discarded because
                         // the terminal boundary owns this stop.
                         if let Some(driver) = dbg {
-                            driver.after_effect(stack.len(), &frame.block, instruction, outcome.tag());
+                            driver.after_effect(
+                                stack.len(),
+                                &frame.block,
+                                instruction,
+                                outcome.tag(),
+                            );
                         }
                         Step::Halt(outcome)
                     }

@@ -12,3 +12,10 @@
 - **VM work blocked or degraded:** end-to-end identity-bound invocation; the VM binds identities internally after adapter resolution, so execution itself is identity-bound but admission is not.
 - **Temporary behavior:** adapter resolves via the public `function_id` derivation against program routing data; ambiguous or missing routes are `UnresolvedFact` refusals.
 - **Removal condition:** upstream accepts identity targets; the adapter drops program-JSON routing and resolves exports against SSA identities only.
+
+
+2026-10-05 scope update: historical `src/migrate.rs` reproductions refer to
+commit `a3ab04c`. That module is now deleted with zero consumers. Direct
+compiler-owned callable emission and lossless frozen SSA encoding remove
+this friction from the dedicated VM path; remaining upstream research
+backend behavior is not changed or claimed resolved by this cleanup.

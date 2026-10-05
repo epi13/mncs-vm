@@ -2,12 +2,11 @@
 //!
 //! This is VM-side tooling, not compiler machinery. It drives the
 //! read-only upstream pipeline (parse, compile, lower) in-process
-//! and hands the emitted backend artifact to the migration adapter.
+//! and emits the canonical VM artifact with the compiler-owned emitter.
 //! Corpus programs are self-contained (no `use` imports), so the
 //! public null resolver is sufficient and no resolution semantics
 //! are reimplemented here.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -21,12 +20,8 @@ pub enum HarnessError {
     Unreadable(String),
     #[error("source front end is invalid: {0}")]
     InvalidSource(String),
-    #[error("compiler request rejected: {0}")]
-    RequestRejected(String),
     #[error("compilation failed: {0}")]
     CompilationFailed(String),
-    #[error("no backend artifact emitted")]
-    NoBackendArtifact,
     #[error("admission refused: {0}")]
     Refused(#[from] AdmissionRefusal),
 }
@@ -41,23 +36,23 @@ pub fn compile_file(path: &Path) -> Result<Admitted, HarnessError> {
     compile_source(&source, &path.to_string_lossy())
 }
 
-/// Compile to the upstream program plus backend artifact pair.
+/// Compile to the upstream program plus directly admitted VM artifact pair.
 /// Exposed so differential tests can drive the read-only oracle
 /// (`execute_ssa`) over the exact same compilation the VM admits.
-pub fn compile_to_backend(
+pub fn compile_direct(
     source: &str,
     locator: &str,
-) -> Result<(mncs_model::Program, mncs_model::BackendArtifact), HarnessError> {
-    compile_to_backend_seeded(source, locator, &[])
+) -> Result<(mncs_model::Program, Admitted), HarnessError> {
+    compile_direct_seeded(source, locator, &[])
 }
 
 /// Seeded variant: host-requested generic instantiations are compiled
 /// in, so the emitted artifact carries generic entrypoints for them.
-pub fn compile_to_backend_seeded(
+pub fn compile_direct_seeded(
     source: &str,
     locator: &str,
     seeds: &[mncs_model::HostGenericSeedRequest],
-) -> Result<(mncs_model::Program, mncs_model::BackendArtifact), HarnessError> {
+) -> Result<(mncs_model::Program, Admitted), HarnessError> {
     let envelope = mncs_syntax::SourceEnvelope::inline(
         mncs_syntax::SourceArtifactKind::Program,
         locator,
@@ -75,40 +70,16 @@ pub fn compile_to_backend_seeded(
     let program = front_end
         .program
         .ok_or_else(|| HarnessError::InvalidSource("no program elaborated".to_owned()))?;
-    let emit: BTreeSet<mncs_model::ArtifactRepresentation> = [
-        mncs_model::ArtifactRepresentation::Semantic,
-        mncs_model::ArtifactRepresentation::Hir,
-        mncs_model::ArtifactRepresentation::Ssa,
-        mncs_model::ArtifactRepresentation::TargetLoweringPlan,
-        mncs_model::ArtifactRepresentation::BackendArtifact,
-    ]
-    .into_iter()
-    .collect();
-    let request = compiler
-        .request_for_program_with_backend(
-            &program,
-            emit,
-            mncs_codegen::RESEARCH_BYTECODE_BACKEND_NAME,
-        )
-        .map_err(|diagnostic| HarnessError::RequestRejected(format!("{diagnostic:?}")))?;
-    let compilation = compiler.compile(request, &program);
-    if compilation.status == mncs_model::CompilationStatus::Failed {
-        return Err(HarnessError::CompilationFailed(format!(
-            "{:?}",
-            compilation.diagnostics
-        )));
-    }
-    let backend = compilation
-        .emissions
-        .backend
-        .ok_or(HarnessError::NoBackendArtifact)?;
-    Ok((program, backend))
+    let artifact = direct_emitter::emit_vm_artifact(&compiler, &program)
+        .map_err(HarnessError::CompilationFailed)?;
+    let bytes = serde_json::to_vec(&artifact).expect("direct artifact serializes");
+    let admitted = crate::admit::admit(&bytes)?;
+    Ok((program, admitted))
 }
 
 /// Compile inline source with an explicit locator label.
 pub fn compile_source(source: &str, locator: &str) -> Result<Admitted, HarnessError> {
-    let (_, backend) = compile_to_backend(source, locator)?;
-    crate::migrate::admit_research_artifact(&backend).map_err(HarnessError::Refused)
+    compile_direct(source, locator).map(|(_, admitted)| admitted)
 }
 
 /// Locate the workspace root from inside the mncs-vm checkout.
@@ -132,3 +103,8 @@ pub mod tests_only {
         compile_file(&path).expect("corpus compiles and admits")
     }
 }
+
+// Development tooling consumes one compiler-owned emitter, never a second
+// lowering architecture. Runtime load/admit needs only frozen bytes.
+#[path = "../../mncs-compiler/tools/vm_emit.rs"]
+mod direct_emitter;

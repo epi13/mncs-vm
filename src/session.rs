@@ -29,6 +29,59 @@ pub struct CallSpec {
     pub envelope: ResourceEnvelope,
 }
 
+impl CallSpec {
+    /// Bind the canonical compiler execution request to VM fuel. Request
+    /// budgets override finite VM defaults; an explicit envelope may only
+    /// tighten them. Artifact-declared bounds are still merged at execution.
+    /// VM steps count VM instructions/edges, never universal CPU cost.
+    pub fn from_request(
+        request: mncs_model::ExecutionRequest,
+        override_envelope: Option<&ResourceEnvelope>,
+    ) -> Result<Self, String> {
+        if request.schema_version != "0.1" {
+            return Err("unsupported execution request schema".into());
+        }
+        if !request.host_grants.is_empty()
+            || request.policy != mncs_model::ExecutionPolicy::default()
+        {
+            return Err(
+                "request host grants/policy require explicit VM capability bindings".into(),
+            );
+        }
+        let mut envelope = ResourceEnvelope::default();
+        for limit in &mut envelope.limits {
+            if limit.dimension == "steps" {
+                limit.limit = request.step_budget;
+            }
+            if limit.dimension == "call_depth" {
+                if let Some(depth) = request.call_depth_budget {
+                    limit.limit = depth;
+                }
+            }
+        }
+        if let Some(extra) = override_envelope {
+            let mut seen = std::collections::BTreeSet::new();
+            for limit in &extra.limits {
+                if !crate::admit::ENFORCED_BOUNDS.contains(&limit.dimension.as_str())
+                    || !seen.insert(&limit.dimension)
+                {
+                    return Err("unknown or duplicate resource dimension".into());
+                }
+            }
+            envelope = ResourceEnvelope::merged(&envelope.limits, &extra.limits);
+        }
+        Ok(Self {
+            target: CallTarget::ByName {
+                module: request.target.module,
+                name: request.target.function,
+            },
+            arguments: request.arguments,
+            type_arguments: request.type_arguments,
+            envelope,
+        })
+    }
+}
+
 /// A resolved call: the frozen function identity to execute plus the
 /// display name recorded in evidence.
 struct ResolvedCall {
@@ -229,7 +282,7 @@ impl<'a> Session<'a> {
             callable_name,
             arguments,
             caps.admitted_capabilities(),
-            spec.envelope.limits.clone(),
+            envelope.limits.clone(),
         );
         if let Err(outcome) = begun {
             // Entry failed before any transition: finish directly with
@@ -349,7 +402,21 @@ impl<'a> Session<'a> {
             callable_name,
             arguments,
             admitted_capabilities: caps.admitted_capabilities(),
-            resource_limits: spec.envelope.limits.clone(),
+            resource_limits: ResourceEnvelope::merged(
+                &self
+                    .admitted
+                    .artifact
+                    .requirements
+                    .bounds
+                    .iter()
+                    .map(|b| ResourceLimit {
+                        dimension: b.dimension.clone(),
+                        limit: b.limit,
+                    })
+                    .collect::<Vec<_>>(),
+                &spec.envelope.limits,
+            )
+            .limits,
             outcome,
             returned,
             usage,

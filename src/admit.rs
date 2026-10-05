@@ -59,6 +59,11 @@ pub struct Admitted {
     /// (generic module, generic name, normalized spellings) ->
     /// generic-entrypoint index. Generic calls bind here.
     pub generic_entries: BTreeMap<(String, String, Vec<String>), usize>,
+    /// Immutable code routing built once at admission, shared by every call.
+    pub(crate) execution_functions: BTreeMap<String, usize>,
+    pub(crate) execution_blocks: Vec<BTreeMap<String, usize>>,
+    /// Strictly nested regions reset at each outer activation.
+    pub(crate) execution_nested_iterations: Vec<Vec<Vec<usize>>>,
 }
 
 impl Admitted {
@@ -127,11 +132,24 @@ impl Admitted {
 /// pressures/P-VM-ARTIFACT-007: frozen interchange needs a
 /// bignum-exact encoding owned by the artifact schema.
 pub fn admit(bytes: &[u8]) -> Result<Admitted, AdmissionRefusal> {
+    admit_artifact(decode_artifact(bytes)?)
+}
+
+/// Own a file/transport buffer so it can be released immediately after
+/// decoding, before identity validation builds temporary canonical tables.
+/// The decode and admission contracts are the same as borrowed `admit`.
+pub fn admit_owned(bytes: Vec<u8>) -> Result<Admitted, AdmissionRefusal> {
+    let artifact = decode_artifact(&bytes)?;
+    drop(bytes);
+    admit_artifact(artifact)
+}
+
+fn decode_artifact(bytes: &[u8]) -> Result<VmArtifact, AdmissionRefusal> {
     // Fast path: decode straight into the artifact (one JSON pass, no
     // intermediate Value). Only failures fall back to the two-step
     // diagnosis so refusal reasons stay exactly as before.
     match serde_json::from_slice::<VmArtifact>(bytes) {
-        Ok(artifact) => admit_artifact(artifact),
+        Ok(artifact) => Ok(artifact),
         Err(_) => {
             let raw: serde_json::Value =
                 serde_json::from_slice(bytes).map_err(|error| AdmissionRefusal::Malformed {
@@ -141,7 +159,7 @@ pub fn admit(bytes: &[u8]) -> Result<Admitted, AdmissionRefusal> {
                 serde_json::from_value(raw).map_err(|error| AdmissionRefusal::Malformed {
                     reason: format!("artifact JSON does not decode: {error}"),
                 })?;
-            admit_artifact(artifact)
+            Ok(artifact)
         }
     }
 }
@@ -329,11 +347,53 @@ pub fn admit_artifact(artifact: VmArtifact) -> Result<Admitted, AdmissionRefusal
             });
         }
     }
+    let mut execution_functions = BTreeMap::new();
+    let mut execution_blocks = Vec::with_capacity(ssa.functions.len());
+    for (index, function) in ssa.functions.iter().enumerate() {
+        execution_functions.insert(function.identity.0.clone(), index);
+        execution_functions.insert(function.semantic_identity.0.clone(), index);
+        execution_blocks.push(
+            function
+                .blocks
+                .iter()
+                .enumerate()
+                .map(|(i, b)| (b.identity.0.clone(), i))
+                .collect(),
+        );
+    }
+    let execution_nested_iterations = ssa
+        .functions
+        .iter()
+        .map(|function| {
+            function
+                .bounded_iterations
+                .iter()
+                .map(|region| {
+                    function
+                        .bounded_iterations
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, other)| {
+                            other.identity != region.identity
+                                && region
+                                    .body_blocks
+                                    .iter()
+                                    .any(|body| body.0 == other.body_entry.0)
+                        })
+                        .map(|(i, _)| i)
+                        .collect()
+                })
+                .collect()
+        })
+        .collect();
     Ok(Admitted {
         artifact,
         by_name,
         by_function,
         ssa_functions,
         generic_entries,
+        execution_functions,
+        execution_blocks,
+        execution_nested_iterations,
     })
 }
