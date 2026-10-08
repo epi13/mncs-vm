@@ -40,5 +40,25 @@
     "cpu_seconds": "UNKNOWN",
     "peak_rss_bytes": "UNKNOWN"
   },
+  "verification_after_evidence_commit": {
+    "source_vm_revision": "5064c5dbf3c266190ed3248ca1a99bee63ffa859",
+    "command": "python3 tools/provider.py build --executable /home/epi13/Documents/Projects/.worktrees/vm-lock-reconcile-20261008/mncs-vm/target/debug/mncs-vm",
+    "status": "built-and-verified-locally",
+    "provider_wall_seconds": 7.234,
+    "cargo_build_seconds": 6.84,
+    "build_origin_status": "matches-embedded-inputs",
+    "build_origin_mismatch_count": 0,
+    "provider_receipt_identity": "sha256:138207abb1bf1adec219c3808e6080f401eedabc4b4b84eb63064ffa5fe83eb7",
+    "runtime_build_identity": "5b2dbe034bcd2b630c6014965ae91ba0b167ad2e51f60a12df9b750a343e5407",
+    "executable_sha256": "f83c0f1a23541eefbcf534385da13e5ee0d5b60bae0ff883c008b1f8c8c868c1",
+    "source_inputs_identity": "016a89991eb20dc5c6ad1a6e34c6d1f828d6a57c8fc9753d55a748228de1feda",
+    "source_revisions": {
+      "mncs-vm": "5064c5dbf3c266190ed3248ca1a99bee63ffa859",
+      "mncs-language": "1513bdf62bbcf4d366238dba1d8f2396b2e94128",
+      "mncs-compiler": "00e941c93a6bf37ca30cd68d6097cb9683dce130"
+    },
+    "cpu_seconds": "UNKNOWN",
+    "peak_rss_bytes": "UNKNOWN"
+  },
   "interpretation": "This verifies the selected Linux provider build and its embedded-input receipt. It does not establish that offline cargo metadata succeeds on hosts missing Windows-target crates, nor does it establish compiler execution or Stage-1 evidence."
 }
