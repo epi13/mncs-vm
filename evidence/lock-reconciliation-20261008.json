@@ -60,5 +60,16 @@
     "cpu_seconds": "UNKNOWN",
     "peak_rss_bytes": "UNKNOWN"
   },
+  "test_suite": {
+    "source_vm_revision": "d3c3f5e",
+    "command": "cargo test --offline --locked",
+    "outcome": "SUCCESS",
+    "tests_passed": 65,
+    "tests_failed": 0,
+    "doc_tests_passed": 0,
+    "doc_tests_failed": 0,
+    "scope": "All VM admission, capability, CLI, compiler-source, debug, differential, execution, generics, resource, smoke, and view integration tests.",
+    "resource_metrics": "CPU and peak RSS were not captured by the test runner."
+  },
   "interpretation": "This verifies the selected Linux provider build and its embedded-input receipt. It does not establish that offline cargo metadata succeeds on hosts missing Windows-target crates, nor does it establish compiler execution or Stage-1 evidence."
 }
