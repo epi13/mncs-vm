@@ -1,0 +1,44 @@
+{
+  "schema_version": "mncs.vm.lock-reconciliation/1",
+  "recorded_at": "2026-10-08T20:46:43Z",
+  "purpose": "Reconcile the VM's Cargo lock with its selected compiler and language sources so the owner build can run offline and locked.",
+  "identity": {
+    "previous_vm_main": "12e5f18004a2900f3ceb31b1789e9833b1876147",
+    "lock_reconciliation_commit": "dc0cec031b988709bb0f33a67cdc2d217ed8a094",
+    "selected_language": "1513bdf62bbcf4d366238dba1d8f2396b2e94128",
+    "selected_compiler": "00e941c93a6bf37ca30cd68d6097cb9683dce130",
+    "cargo_lock_sha256": "75af97a26fa4ad4ffc42b419976fe51826725d1b8d8ce960608ba55fabcbee4f"
+  },
+  "finding": {
+    "previous_locked_build_blocker": "The selected language source requires Cranelift 0.136.2 while the VM lock selected 0.121.2; cargo metadata --offline --locked rejected the stale lock.",
+    "lock_change_scope": "Cargo.lock only",
+    "registry_package_alignment": "The VM and selected language Cargo.lock files contain the same registry package name/version/source set.",
+    "offline_metadata_observation": "After lock reconciliation, cargo metadata --offline --locked attempted to fetch windows-link 0.2.1, which was absent from the local cache. This does not establish a Linux build failure; the exact Linux VM provider build below succeeded."
+  },
+  "verification": {
+    "command": "python3 tools/provider.py build --executable /home/epi13/Documents/Projects/.worktrees/vm-lock-reconcile-20261008/mncs-vm/target/debug/mncs-vm",
+    "underlying_build": "cargo build --offline --locked --bin mncs-vm",
+    "status": "built-and-verified-locally",
+    "elapsed_seconds": 6.88,
+    "build_origin_status": "matches-embedded-inputs",
+    "build_origin_mismatch_count": 0,
+    "provider_receipt_identity": "sha256:0ebfe9e4c4f14ff13c95d61c136e60be6540619ef658073f962cb526b0c489d2",
+    "runtime_build_identity": "5a828236de29c41fe6eb38655d98aceeb95a992db4a85c42d9b3a71fc0c01ba9",
+    "executable_sha256": "e847ea83746b45543c9267e2431055a6ab74ddeb2c5f32f4466c84a301c386bc",
+    "source_inputs_identity": "016a89991eb20dc5c6ad1a6e34c6d1f828d6a57c8fc9753d55a748228de1feda",
+    "source_revisions": {
+      "mncs-vm": "dc0cec031b988709bb0f33a67cdc2d217ed8a094",
+      "mncs-language": "1513bdf62bbcf4d366238dba1d8f2396b2e94128",
+      "mncs-compiler": "00e941c93a6bf37ca30cd68d6097cb9683dce130"
+    },
+    "toolchain": {
+      "cargo": "cargo 1.97.1",
+      "rustc": "rustc 1.97.1",
+      "target": "x86_64-unknown-linux-gnu",
+      "assurance": "local build observation; not independent attestation"
+    },
+    "cpu_seconds": "UNKNOWN",
+    "peak_rss_bytes": "UNKNOWN"
+  },
+  "interpretation": "This verifies the selected Linux provider build and its embedded-input receipt. It does not establish that offline cargo metadata succeeds on hosts missing Windows-target crates, nor does it establish compiler execution or Stage-1 evidence."
+}
