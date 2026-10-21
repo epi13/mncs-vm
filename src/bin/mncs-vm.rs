@@ -9,20 +9,24 @@
 //!   debugger drives: the execution lives in this process across
 //!   requests, so stops, inspection, and resume are truthful.
 
-use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, OpenOptions};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use mncs_vm::admit::Admitted;
-use mncs_vm::capability::{CapabilityEnv, ConstProvider};
+use mncs_vm::capability::{CapabilityEnv, ConstProvider, EffectRequest, EffectResponse, Provider};
 use mncs_vm::debug::{DebugConfig, DebugError, DebugStart, LiveEvent, StopTarget};
 use mncs_vm::engine::CallTarget;
 use mncs_vm::outcome::Outcome;
 use mncs_vm::resource::ResourceEnvelope;
 use mncs_vm::session::{CallSpec, Session};
-use mncs_vm::value::from_wire;
+use mncs_vm::value::{from_wire, to_wire, Value};
 
 const CLI_SCHEMA_VERSION: &str = "mncs.vm.debug-cli/1";
+const STRUCTURED_FILE_PROVIDER_SCHEMA: &str = "mncs.vm.structured-file-provider/1";
+const MAX_STRUCTURED_FILE_INPUT_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_STRUCTURED_FILE_OUTPUT_BYTES: u64 = 512 * 1024;
 
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
@@ -31,7 +35,10 @@ fn main() {
         "run" => cmd_run(&argv[2..]),
         "batch" => cmd_batch(&argv[2..]),
         "serve" => cmd_serve(&argv[2..]),
-        "describe" => { println!("{}", runtime_description()); 0 },
+        "describe" => {
+            println!("{}", runtime_description());
+            0
+        }
         "admit" => cmd_admit(&argv[2..]),
         "compile" => cmd_compile(&argv[2..]),
         "debug" => cmd_debug(&argv[2..]),
@@ -41,7 +48,11 @@ fn main() {
         }
         _ => {
             print_help();
-            if command == "help" { 0 } else { 2 }
+            if command == "help" {
+                0
+            } else {
+                2
+            }
         }
     };
     std::process::exit(code);
@@ -77,14 +88,28 @@ fn runtime_description() -> serde_json::Value {
 }
 
 fn selected_artifact(argv: &[String]) -> Result<Admitted, String> {
-    if argv.len() != 2 || argv[0] != "--artifact" { return Err("requires --artifact FILE".into()); }
+    if argv.len() != 2 || argv[0] != "--artifact" {
+        return Err("requires --artifact FILE".into());
+    }
     load_admitted(Some(Path::new(&argv[1])), None)
 }
 
 fn cmd_admit(argv: &[String]) -> i32 {
     match selected_artifact(argv) {
-        Ok(admitted) => { println!("{}", serde_json::json!({"schema_version":"mncs.vm.admission/1", "status":"admitted", "artifact_id":admitted.artifact_id(), "runtime":runtime_description()})); 0 }
-        Err(reason) => { println!("{}", serde_json::json!({"schema_version":"mncs.vm.admission/1", "status":"refused", "reason":reason})); 2 }
+        Ok(admitted) => {
+            println!(
+                "{}",
+                serde_json::json!({"schema_version":"mncs.vm.admission/1", "status":"admitted", "artifact_id":admitted.artifact_id(), "runtime":runtime_description()})
+            );
+            0
+        }
+        Err(reason) => {
+            println!(
+                "{}",
+                serde_json::json!({"schema_version":"mncs.vm.admission/1", "status":"refused", "reason":reason})
+            );
+            2
+        }
     }
 }
 
@@ -111,23 +136,35 @@ struct TestCallableReference {
 }
 
 fn cmd_serve(argv: &[String]) -> i32 {
-    let admitted = match selected_artifact(argv) { Ok(a) => a, Err(reason) => return run_error(&reason) };
+    let admitted = match selected_artifact(argv) {
+        Ok(a) => a,
+        Err(reason) => return run_error(&reason),
+    };
     let caps = CapabilityEnv::empty();
     let mut session = Session::open(&admitted);
-    println!("{}", serde_json::json!({"schema_version":SESSION_SCHEMA,"status":"ready","artifact_id":admitted.artifact_id(),"runtime":runtime_description()}));
-    if std::io::stdout().flush().is_err() { return 2; }
+    println!(
+        "{}",
+        serde_json::json!({"schema_version":SESSION_SCHEMA,"status":"ready","artifact_id":admitted.artifact_id(),"runtime":runtime_description()})
+    );
+    if std::io::stdout().flush().is_err() {
+        return 2;
+    }
     let mut input = std::io::stdin().lock();
     loop {
         let mut line = String::new();
         // Bounded stdio only; no listener, ambient effects or unbounded input allocation.
         match std::io::Read::take(&mut input, MAX_SESSION_REQUEST_BYTES + 1).read_line(&mut line) {
             Ok(0) => return 0,
-            Ok(_) if line.len() as u64 > MAX_SESSION_REQUEST_BYTES => return run_error("session request exceeds byte bound"),
+            Ok(_) if line.len() as u64 > MAX_SESSION_REQUEST_BYTES => {
+                return run_error("session request exceeds byte bound")
+            }
             Ok(_) => (),
             Err(error) => return run_error(&error.to_string()),
         }
         let parsed = serde_json::from_str::<SessionRequest>(&line).map_err(|e| e.to_string());
-        let id = serde_json::from_str::<serde_json::Value>(&line).ok().and_then(|v| v.get("id").cloned());
+        let id = serde_json::from_str::<serde_json::Value>(&line)
+            .ok()
+            .and_then(|v| v.get("id").cloned());
         let result = parsed.and_then(|call| {
             if call.schema_version != SESSION_SCHEMA { return Err("unsupported session schema".into()); }
             let target = call.request.target.clone();
@@ -159,7 +196,9 @@ fn cmd_serve(argv: &[String]) -> i32 {
             Ok(serde_json::json!({"id":call.id,"schema_version":SESSION_SCHEMA,"ok":true,"result":{"outcome":outcome,"record":record,"execution":execution}}))
         }).unwrap_or_else(|reason| serde_json::json!({"id":id,"schema_version":SESSION_SCHEMA,"ok":false,"reason":reason}));
         println!("{result}");
-        if std::io::stdout().flush().is_err() { return 2; }
+        if std::io::stdout().flush().is_err() {
+            return 2;
+        }
     }
 }
 
@@ -554,7 +593,10 @@ fn run_error(message: &str) -> i32 {
     let document = serde_json::json!({
         "outcome": Outcome::InvalidRequest { reason: message.to_owned() },
     });
-    println!("{}", serde_json::to_string_pretty(&document).unwrap_or_default());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&document).unwrap_or_default()
+    );
     1
 }
 
@@ -562,7 +604,8 @@ fn load_admitted(artifact: Option<&Path>, compile: Option<&Path>) -> Result<Admi
     if let Some(path) = artifact {
         let bytes = std::fs::read(path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        return mncs_vm::admit::admit_owned(bytes).map_err(|refusal| format!("admission refused: {refusal}"));
+        return mncs_vm::admit::admit_owned(bytes)
+            .map_err(|refusal| format!("admission refused: {refusal}"));
     }
     let path = compile.expect("one source is set");
     mncs_vm::harness::compile_file(path)
@@ -579,8 +622,8 @@ fn load_envelope(path: Option<&Path>) -> Result<ResourceEnvelope, String> {
     let Some(path) = path else {
         return Ok(default_envelope());
     };
-    let text =
-        std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     serde_json::from_str(&text).map_err(|error| format!("bad envelope {}: {error}", path.display()))
 }
 
@@ -588,8 +631,8 @@ fn load_json_array(path: Option<&Path>) -> Result<Vec<mncs_model::ExecutionValue
     let Some(path) = path else {
         return Ok(Vec::new());
     };
-    let text =
-        std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     serde_json::from_str(&text).map_err(|error| format!("bad args {}: {error}", path.display()))
 }
 
@@ -599,24 +642,50 @@ fn load_json_type_args(
     let Some(path) = path else {
         return Ok(Vec::new());
     };
-    let text =
-        std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-    serde_json::from_str(&text).map_err(|error| format!("bad type-args {}: {error}", path.display()))
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    serde_json::from_str(&text)
+        .map_err(|error| format!("bad type-args {}: {error}", path.display()))
 }
 
 fn load_policy(path: &Path) -> Result<mncs_model::ExecutionObservationPolicy, String> {
-    let text =
-        std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     serde_json::from_str(&text).map_err(|error| format!("bad policy {}: {error}", path.display()))
 }
 
 fn load_capabilities(providers: &[(String, PathBuf)]) -> Result<CapabilityEnv, String> {
     let mut caps = CapabilityEnv::empty();
+    let mut bound = BTreeSet::new();
     for (capability, path) in providers {
+        if capability.trim().is_empty() || !bound.insert(capability) {
+            return Err(format!(
+                "duplicate or empty provider capability {capability:?}"
+            ));
+        }
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|error| format!("cannot inspect provider {}: {error}", path.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!("provider {} is not a regular file", path.display()));
+        }
         let text = std::fs::read_to_string(path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
         let document: serde_json::Value = serde_json::from_str(&text)
             .map_err(|error| format!("bad provider {}: {error}", path.display()))?;
+        if let Some(schema) = document
+            .get("schema_version")
+            .and_then(serde_json::Value::as_str)
+        {
+            if schema != STRUCTURED_FILE_PROVIDER_SCHEMA {
+                return Err(format!(
+                    "unsupported provider schema {schema:?} in {}",
+                    path.display()
+                ));
+            }
+            let provider = StructuredFileProvider::from_document(capability, &document)?;
+            caps = caps.bind(capability, provider);
+            continue;
+        }
         let identity = document
             .get("identity")
             .and_then(serde_json::Value::as_str)
@@ -637,6 +706,513 @@ fn load_capabilities(providers: &[(String, PathBuf)]) -> Result<CapabilityEnv, S
         );
     }
     Ok(caps)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StructuredFileEndpoint {
+    path: String,
+    schema: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StructuredFileProviderDocument {
+    schema_version: String,
+    identity: String,
+    read: StructuredFileEndpoint,
+    write: StructuredFileEndpoint,
+    #[serde(default)]
+    max_input_bytes: Option<u64>,
+    #[serde(default)]
+    max_output_bytes: Option<u64>,
+}
+
+struct StructuredFileProvider {
+    capability: String,
+    identity: String,
+    input_path: PathBuf,
+    input_schema: String,
+    output_path: PathBuf,
+    output_schema: String,
+    max_input_bytes: u64,
+    max_output_bytes: u64,
+}
+
+impl StructuredFileProvider {
+    fn from_document(capability: &str, document: &serde_json::Value) -> Result<Self, String> {
+        let config: StructuredFileProviderDocument = serde_json::from_value(document.clone())
+            .map_err(|error| format!("bad structured-file provider: {error}"))?;
+        if config.schema_version != STRUCTURED_FILE_PROVIDER_SCHEMA
+            || config.identity.trim().is_empty()
+            || config.identity.len() > 128
+            || config.read.schema.trim().is_empty()
+            || config.read.schema.len() > 128
+            || config.write.schema.trim().is_empty()
+            || config.write.schema.len() > 128
+        {
+            return Err("structured-file provider identity or schema is invalid".to_owned());
+        }
+        let max_input_bytes = config
+            .max_input_bytes
+            .unwrap_or(MAX_STRUCTURED_FILE_INPUT_BYTES);
+        let max_output_bytes = config
+            .max_output_bytes
+            .unwrap_or(MAX_STRUCTURED_FILE_OUTPUT_BYTES);
+        if max_input_bytes == 0
+            || max_input_bytes > MAX_STRUCTURED_FILE_INPUT_BYTES
+            || max_output_bytes == 0
+            || max_output_bytes > MAX_STRUCTURED_FILE_OUTPUT_BYTES
+        {
+            return Err("structured-file provider exceeds its hard byte bounds".to_owned());
+        }
+        let input_path = canonical_provider_path(&config.read.path, true, "input")?;
+        let output_path = canonical_provider_path(&config.write.path, false, "output")?;
+        if input_path == output_path {
+            return Err("structured-file provider input and output paths must differ".to_owned());
+        }
+        Ok(Self {
+            capability: capability.to_owned(),
+            identity: config.identity,
+            input_path,
+            input_schema: config.read.schema,
+            output_path,
+            output_schema: config.write.schema,
+            max_input_bytes,
+            max_output_bytes,
+        })
+    }
+
+    fn failure(&self, detail: impl Into<String>) -> Outcome {
+        Outcome::ProviderFailure {
+            provider: self.identity.clone(),
+            detail: detail.into(),
+        }
+    }
+
+    fn response(&self, outputs: Vec<Value>) -> EffectResponse {
+        EffectResponse {
+            provider: self.identity.clone(),
+            outputs,
+            note: "bounded structured-file provider".to_owned(),
+        }
+    }
+
+    fn invoke_read(&self, request: &EffectRequest) -> Result<EffectResponse, Outcome> {
+        if request.inputs.len() != 2 {
+            return Err(self.failure("structured_read arity mismatch"));
+        }
+        let path = value_text(&request.inputs[0]).map_err(|error| self.failure(error))?;
+        let schema = value_text(&request.inputs[1]).map_err(|error| self.failure(error))?;
+        if PathBuf::from(path) != self.input_path || schema != self.input_schema {
+            return Err(self.failure("structured_read path or schema is not admitted"));
+        }
+        let metadata = fs::symlink_metadata(&self.input_path)
+            .map_err(|error| self.failure(format!("inspect input: {error}")))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(self.failure("structured_read input is not a regular file"));
+        }
+        if metadata.len() > self.max_input_bytes {
+            return Err(self.failure("structured_read input exceeds its byte bound"));
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        fs::File::open(&self.input_path)
+            .and_then(|file| file.take(self.max_input_bytes + 1).read_to_end(&mut bytes))
+            .map_err(|error| self.failure(format!("read input: {error}")))?;
+        if bytes.len() as u64 > self.max_input_bytes {
+            return Err(self.failure("structured_read input exceeds its byte bound"));
+        }
+        let wire: mncs_model::ExecutionValue = serde_json::from_slice(&bytes)
+            .map_err(|error| self.failure(format!("decode typed input: {error}")))?;
+        Ok(self.response(vec![from_wire(&wire)]))
+    }
+
+    fn invoke_write(&self, request: &EffectRequest) -> Result<EffectResponse, Outcome> {
+        if request.inputs.len() != 3 {
+            return Err(self.failure("structured_write arity mismatch"));
+        }
+        let path = value_text(&request.inputs[0]).map_err(|error| self.failure(error))?;
+        let schema = value_text(&request.inputs[1]).map_err(|error| self.failure(error))?;
+        if PathBuf::from(path) != self.output_path || schema != self.output_schema {
+            return Err(self.failure("structured_write path or schema is not admitted"));
+        }
+        let bytes = serde_json::to_vec(&to_wire(&request.inputs[2]))
+            .map_err(|error| self.failure(format!("encode typed output: {error}")))?;
+        if bytes.len() as u64 > self.max_output_bytes {
+            return Err(self.failure("structured_write output exceeds its byte bound"));
+        }
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&self.output_path)
+            .map_err(|error| self.failure(format!("create output: {error}")))?;
+        file.write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|error| self.failure(format!("publish output: {error}")))?;
+        Ok(self.response(vec![Value::Integer {
+            value: 1,
+            bits: 64,
+            signed: false,
+        }]))
+    }
+}
+
+impl Provider for StructuredFileProvider {
+    fn identity(&self) -> &str {
+        &self.identity
+    }
+
+    fn invoke(&self, request: &EffectRequest) -> Result<EffectResponse, Outcome> {
+        if request.capability != self.capability {
+            return Err(self.failure("capability identity mismatch"));
+        }
+        match request.operation.as_str() {
+            "structured_read" => self.invoke_read(request),
+            "structured_write" => self.invoke_write(request),
+            operation => Err(self.failure(format!("operation {operation:?} is not supported"))),
+        }
+    }
+}
+
+fn canonical_provider_path(raw: &str, must_exist: bool, label: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err(format!("structured-file {label} path must be absolute"));
+    }
+    let file_name = path
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| format!("structured-file {label} path has no file name"))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("structured-file {label} path has no parent"))?
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve structured-file {label} directory: {error}"))?;
+    let resolved = parent.join(file_name);
+    match fs::symlink_metadata(&resolved) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(format!("structured-file {label} path is a symlink"));
+            }
+            if must_exist && !metadata.is_file() {
+                return Err(format!(
+                    "structured-file {label} path is not a regular file"
+                ));
+            }
+            if !must_exist {
+                return Err(format!("structured-file {label} path already exists"));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !must_exist => {}
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect structured-file {label} path: {error}"
+            ));
+        }
+    }
+    Ok(resolved)
+}
+
+fn value_text(value: &Value) -> Result<String, String> {
+    let Value::Sequence { elements } = value else {
+        return Err("structured-file path and schema values must be byte sequences".to_owned());
+    };
+    let bytes = elements
+        .iter()
+        .map(|item| match item {
+            Value::Byte(byte) => Ok(*byte),
+            _ => Err("structured-file path or schema contains a non-byte value".to_owned()),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    String::from_utf8(bytes).map_err(|error| format!("structured-file value is not UTF-8: {error}"))
+}
+
+#[cfg(test)]
+mod structured_file_provider_tests {
+    use super::{load_capabilities, EffectRequest};
+    use mncs_vm::capability::CapabilityEnv;
+    use mncs_vm::outcome::Outcome;
+    use mncs_vm::value::{from_wire, to_wire, Value};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const CAPABILITY: &str = "mncs.test-artifact";
+    const REQUEST_SCHEMA: &str = "mncs.test-digest-request/1";
+    const RESULT_SCHEMA: &str = "mncs.test-digest/1";
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock is after UNIX epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "mncs-vm-structured-provider-{}-{stamp}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).expect("create isolated provider test directory");
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn bytes(text: &str) -> Value {
+        Value::Sequence {
+            elements: Arc::new(text.bytes().map(Value::Byte).collect()),
+        }
+    }
+
+    fn fixture(
+        max_input_bytes: u64,
+        max_output_bytes: u64,
+    ) -> (TestDirectory, PathBuf, PathBuf, PathBuf) {
+        let root = TestDirectory::new();
+        let input_path = root.0.join("request.json");
+        let output_path = root.0.join("result.json");
+        let input = Value::Integer {
+            value: 41,
+            bits: 64,
+            signed: false,
+        };
+        std::fs::write(
+            &input_path,
+            serde_json::to_vec(&to_wire(&input)).expect("encode typed request"),
+        )
+        .expect("write typed request");
+        let provider_path = root.0.join("provider.json");
+        let document = serde_json::json!({
+            "schema_version": "mncs.vm.structured-file-provider/1",
+            "identity": "mncs-test-artifact-structured-file-provider/1",
+            "read": {"path": input_path, "schema": REQUEST_SCHEMA},
+            "write": {"path": output_path, "schema": RESULT_SCHEMA},
+            "max_input_bytes": max_input_bytes,
+            "max_output_bytes": max_output_bytes,
+        });
+        std::fs::write(
+            &provider_path,
+            serde_json::to_vec(&document).expect("encode provider configuration"),
+        )
+        .expect("write provider configuration");
+        (root, provider_path, input_path, output_path)
+    }
+
+    fn request(capability: &str, operation: &str, inputs: Vec<Value>) -> EffectRequest {
+        EffectRequest {
+            capability: capability.to_owned(),
+            operation: operation.to_owned(),
+            inputs,
+        }
+    }
+
+    fn bind(provider_path: &PathBuf) -> CapabilityEnv {
+        load_capabilities(&[(CAPABILITY.to_owned(), provider_path.clone())])
+            .expect("admit the explicitly configured provider")
+    }
+
+    #[test]
+    fn bounded_structured_file_provider_reads_and_publishes_typed_values() {
+        let (_root, provider_path, input_path, output_path) = fixture(1024, 1024);
+        let caps = bind(&provider_path);
+        let input = caps
+            .dispatch(&request(
+                CAPABILITY,
+                "structured_read",
+                vec![bytes(&input_path.to_string_lossy()), bytes(REQUEST_SCHEMA)],
+            ))
+            .expect("admitted read succeeds");
+        assert_eq!(
+            input.provider,
+            "mncs-test-artifact-structured-file-provider/1"
+        );
+        assert_eq!(
+            input.outputs,
+            vec![Value::Integer {
+                value: 41,
+                bits: 64,
+                signed: false,
+            }]
+        );
+
+        let output = caps
+            .dispatch(&request(
+                CAPABILITY,
+                "structured_write",
+                vec![
+                    bytes(&output_path.to_string_lossy()),
+                    bytes(RESULT_SCHEMA),
+                    Value::Integer {
+                        value: 42,
+                        bits: 64,
+                        signed: false,
+                    },
+                ],
+            ))
+            .expect("admitted write succeeds");
+        assert_eq!(
+            output.outputs,
+            vec![Value::Integer {
+                value: 1,
+                bits: 64,
+                signed: false,
+            }]
+        );
+        let wire: mncs_model::ExecutionValue =
+            serde_json::from_slice(&std::fs::read(output_path).expect("read typed result"))
+                .expect("decode typed result");
+        assert_eq!(
+            from_wire(&wire),
+            Value::Integer {
+                value: 42,
+                bits: 64,
+                signed: false,
+            }
+        );
+    }
+
+    #[test]
+    fn structured_file_provider_rejects_unadmitted_paths_and_schemas() {
+        let (_root, provider_path, _input_path, output_path) = fixture(1024, 1024);
+        let caps = bind(&provider_path);
+        let wrong_path = caps
+            .dispatch(&request(
+                CAPABILITY,
+                "structured_read",
+                vec![bytes("/tmp/unadmitted-request.json"), bytes(REQUEST_SCHEMA)],
+            ))
+            .unwrap_err();
+        assert!(matches!(wrong_path, Outcome::ProviderFailure { .. }));
+        let wrong_schema = caps
+            .dispatch(&request(
+                CAPABILITY,
+                "structured_write",
+                vec![
+                    bytes(&output_path.to_string_lossy()),
+                    bytes("mncs.test-other-result/1"),
+                    Value::Boolean(true),
+                ],
+            ))
+            .unwrap_err();
+        assert!(matches!(wrong_schema, Outcome::ProviderFailure { .. }));
+        assert!(
+            !output_path.exists(),
+            "rejected output must not be published"
+        );
+        let absent = caps
+            .dispatch(&request(
+                "unadmitted-capability",
+                "structured_read",
+                Vec::new(),
+            ))
+            .unwrap_err();
+        assert!(matches!(absent, Outcome::CapabilityDenied { .. }));
+    }
+
+    #[test]
+    fn structured_file_provider_enforces_byte_bounds_and_single_binding() {
+        let (_root, provider_path, input_path, _output_path) = fixture(1, 1);
+        let caps = bind(&provider_path);
+        let oversized = caps
+            .dispatch(&request(
+                CAPABILITY,
+                "structured_read",
+                vec![bytes(&input_path.to_string_lossy()), bytes(REQUEST_SCHEMA)],
+            ))
+            .unwrap_err();
+        assert!(matches!(oversized, Outcome::ProviderFailure { .. }));
+        assert!(load_capabilities(&[
+            (CAPABILITY.to_owned(), provider_path.clone()),
+            (CAPABILITY.to_owned(), provider_path),
+        ])
+        .is_err());
+
+        let (_root, provider_path, _input_path, output_path) = fixture(1024, 1);
+        let caps = bind(&provider_path);
+        let oversized = caps
+            .dispatch(&request(
+                CAPABILITY,
+                "structured_write",
+                vec![
+                    bytes(&output_path.to_string_lossy()),
+                    bytes(RESULT_SCHEMA),
+                    Value::Integer {
+                        value: 42,
+                        bits: 64,
+                        signed: false,
+                    },
+                ],
+            ))
+            .unwrap_err();
+        assert!(matches!(oversized, Outcome::ProviderFailure { .. }));
+        assert!(
+            !output_path.exists(),
+            "oversized result must not be published"
+        );
+    }
+
+    #[test]
+    fn structured_file_provider_hard_byte_limits_cannot_be_raised_by_configuration() {
+        let (_root, provider_path, _input_path, _output_path) = fixture(u64::MAX, 1024);
+        assert!(load_capabilities(&[(CAPABILITY.to_owned(), provider_path)]).is_err());
+    }
+
+    #[test]
+    fn structured_file_provider_configuration_rejects_symlinks_and_existing_outputs() {
+        let (_root, provider_path, _input_path, output_path) = fixture(1024, 1024);
+        let target_path = output_path.with_file_name("existing-target.json");
+        std::fs::write(&target_path, b"{}").expect("write output symlink target");
+        let alias_path = output_path.with_file_name("result-alias.json");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_path, &alias_path).expect("create output symlink");
+        #[cfg(not(unix))]
+        return;
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&provider_path).unwrap()).unwrap();
+        document["write"]["path"] = serde_json::json!(alias_path);
+        std::fs::write(&provider_path, serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(load_capabilities(&[(CAPABILITY.to_owned(), provider_path.clone())]).is_err());
+        document["write"]["path"] = serde_json::json!(target_path);
+        std::fs::write(&provider_path, serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(load_capabilities(&[(CAPABILITY.to_owned(), provider_path)]).is_err());
+    }
+
+    #[test]
+    fn legacy_constant_provider_files_remain_supported() {
+        let root = TestDirectory::new();
+        let provider_path = root.0.join("constant-provider.json");
+        let document = serde_json::json!({
+            "identity": "legacy-cli-const-provider",
+            "outputs": [{
+                "integer": {"type": {"bits": 64, "signed": false}, "value": 17}
+            }],
+        });
+        std::fs::write(&provider_path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let caps = load_capabilities(&[("sensor".to_owned(), provider_path)]).unwrap();
+        let response = caps
+            .dispatch(&request("sensor", "probe", Vec::new()))
+            .expect("legacy constant provider remains supported");
+        assert_eq!(response.provider, "legacy-cli-const-provider");
+        assert_eq!(
+            response.outputs,
+            vec![Value::Integer {
+                value: 17,
+                bits: 64,
+                signed: false,
+            }]
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -725,9 +1301,10 @@ fn serve_socket(path: &Path) -> i32 {
         // connection and close promptly; a client that holds a
         // connection open across operations starves every other
         // client until it reaches EOF.
-        let reader = BufReader::new(stream.try_clone().unwrap_or_else(|_| {
-            panic!("socket clone failed while serving {}", path.display())
-        }));
+        let reader =
+            BufReader::new(stream.try_clone().unwrap_or_else(|_| {
+                panic!("socket clone failed while serving {}", path.display())
+            }));
         let mut writer = stream;
         let mut quit = false;
         for line in reader.lines() {
@@ -758,7 +1335,10 @@ fn serve_socket(path: &Path) -> i32 {
 
 #[cfg(not(unix))]
 fn serve_socket(path: &Path) -> i32 {
-    eprintln!("mncs-vm: --serve needs a Unix socket host (not {})", path.display());
+    eprintln!(
+        "mncs-vm: --serve needs a Unix socket host (not {})",
+        path.display()
+    );
     1
 }
 
@@ -788,9 +1368,18 @@ impl DebugHandler {
                 );
             }
         };
-        let id = request.get("id").cloned().unwrap_or(serde_json::Value::Null);
-        let op = request.get("op").and_then(serde_json::Value::as_str).unwrap_or("");
-        let params = request.get("params").cloned().unwrap_or(serde_json::Value::Null);
+        let id = request
+            .get("id")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let op = request
+            .get("op")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let params = request
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         match op {
             "start" => (self.op_start(&id, &params), false),
             "resume" | "continue" => (self.op_drive(&id, &params, op), false),
@@ -848,7 +1437,11 @@ impl DebugHandler {
             Ok(caps) => caps,
             Err(message) => return error_response(id, "invalid_request", &message),
         };
-        let config: DebugConfig = match params.get("debug").map(|value| serde_json::from_value(value.clone())).transpose() {
+        let config: DebugConfig = match params
+            .get("debug")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+        {
             Ok(config) => config.unwrap_or_default(),
             Err(error) => {
                 return error_response(id, "invalid_request", &format!("bad debug config: {error}"))
@@ -898,7 +1491,10 @@ impl DebugHandler {
     }
 
     fn op_drive(&mut self, id: &serde_json::Value, params: &serde_json::Value, op: &str) -> String {
-        let token = params.get("token").and_then(serde_json::Value::as_str).unwrap_or("");
+        let token = params
+            .get("token")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
         let include_stream = params
             .get("include_stream")
             .and_then(serde_json::Value::as_bool)
@@ -930,7 +1526,10 @@ impl DebugHandler {
         // the current token so concurrent clients cannot interleave.
         if let Some(live) = self.live.as_ref() {
             if !live.is_finished() {
-                let token = params.get("token").and_then(serde_json::Value::as_str).unwrap_or("");
+                let token = params
+                    .get("token")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
                 if !live_token_matches(live, token) {
                     return error_response(
                         id,
@@ -944,12 +1543,24 @@ impl DebugHandler {
             Ok(live) => live,
             Err(response) => return response,
         };
-        let view = params.get("view").and_then(serde_json::Value::as_str).unwrap_or("stack");
+        let view = params
+            .get("view")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("stack");
         match view {
             "stack" => {
-                let max_frames = params.get("max_frames").and_then(serde_json::Value::as_u64).unwrap_or(16) as usize;
-                let max_values = params.get("max_values").and_then(serde_json::Value::as_u64).unwrap_or(64) as usize;
-                let max_value_bytes = params.get("max_value_bytes").and_then(serde_json::Value::as_u64).unwrap_or(4096) as usize;
+                let max_frames = params
+                    .get("max_frames")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(16) as usize;
+                let max_values = params
+                    .get("max_values")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(64) as usize;
+                let max_value_bytes = params
+                    .get("max_value_bytes")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(4096) as usize;
                 match live.inspect_stack(max_frames, max_values, max_value_bytes) {
                     Ok(stack) => ok_response(id, serde_json::json!({"stack": stack})),
                     Err(error) => error_response(id, &debug_code(&error), &error.to_string()),
@@ -970,7 +1581,10 @@ impl DebugHandler {
     }
 
     fn op_bind_stop(&mut self, id: &serde_json::Value, params: &serde_json::Value) -> String {
-        let token = params.get("token").and_then(serde_json::Value::as_str).unwrap_or("");
+        let token = params
+            .get("token")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
         let live = match self.live_mut(id) {
             Ok(live) => live,
             Err(response) => return response,
@@ -982,14 +1596,21 @@ impl DebugHandler {
                 "bind_stop needs the current continuation token",
             );
         }
-        let target: StopTarget = match params.get("target").map(|value| serde_json::from_value(value.clone())).transpose() {
+        let target: StopTarget = match params
+            .get("target")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+        {
             Ok(Some(target)) => target,
             Ok(None) => return error_response(id, "invalid_request", "bind_stop needs a target"),
             Err(error) => {
                 return error_response(id, "invalid_request", &format!("bad target: {error}"))
             }
         };
-        let name = params.get("id").and_then(serde_json::Value::as_str).map(str::to_owned);
+        let name = params
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
         match live.bind_stop(target, name) {
             Ok(condition) => ok_response(id, serde_json::json!({"condition": condition})),
             Err(error) => error_response(id, &debug_code(&error), &error.to_string()),
@@ -997,7 +1618,10 @@ impl DebugHandler {
     }
 
     fn op_clear_stop(&mut self, id: &serde_json::Value, params: &serde_json::Value) -> String {
-        let token = params.get("token").and_then(serde_json::Value::as_str).unwrap_or("");
+        let token = params
+            .get("token")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
         let live = match self.live_mut(id) {
             Ok(live) => live,
             Err(response) => return response,
@@ -1009,7 +1633,10 @@ impl DebugHandler {
                 "clear_stop needs the current continuation token",
             );
         }
-        let name = params.get("id").and_then(serde_json::Value::as_str).unwrap_or("");
+        let name = params
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
         match live.clear_stop(name) {
             Ok(cleared) => ok_response(id, serde_json::json!({"cleared": cleared})),
             Err(error) => error_response(id, &debug_code(&error), &error.to_string()),
@@ -1017,7 +1644,10 @@ impl DebugHandler {
     }
 
     fn op_terminate(&mut self, id: &serde_json::Value, params: &serde_json::Value) -> String {
-        let token = params.get("token").and_then(serde_json::Value::as_str).unwrap_or("");
+        let token = params
+            .get("token")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
         let include_stream = params
             .get("include_stream")
             .and_then(serde_json::Value::as_bool)
@@ -1057,13 +1687,19 @@ fn live_token_matches(live: &mncs_vm::debug::LiveExecution<'static>, token: &str
 }
 
 fn start_admitted(params: &serde_json::Value) -> Result<Admitted, String> {
-    if let Some(path) = params.get("artifact_path").and_then(serde_json::Value::as_str) {
+    if let Some(path) = params
+        .get("artifact_path")
+        .and_then(serde_json::Value::as_str)
+    {
         let bytes = std::fs::read(path).map_err(|error| format!("cannot read {path}: {error}"))?;
-        return mncs_vm::admit::admit_owned(bytes).map_err(|refusal| format!("admission refused: {refusal}"));
+        return mncs_vm::admit::admit_owned(bytes)
+            .map_err(|refusal| format!("admission refused: {refusal}"));
     }
     if let Some(document) = params.get("artifact") {
-        let bytes = serde_json::to_vec(document).map_err(|error| format!("bad artifact: {error}"))?;
-        return mncs_vm::admit::admit_owned(bytes).map_err(|refusal| format!("admission refused: {refusal}"));
+        let bytes =
+            serde_json::to_vec(document).map_err(|error| format!("bad artifact: {error}"))?;
+        return mncs_vm::admit::admit_owned(bytes)
+            .map_err(|refusal| format!("admission refused: {refusal}"));
     }
     if let Some(path) = params.get("compile").and_then(serde_json::Value::as_str) {
         return mncs_vm::harness::compile_file(Path::new(path))
@@ -1079,8 +1715,14 @@ fn start_target(params: &serde_json::Value) -> Result<CallTarget, String> {
             function: function.to_owned(),
         });
     }
-    let module = target.get("module").and_then(serde_json::Value::as_str).ok_or("target needs module+name or function")?;
-    let name = target.get("name").and_then(serde_json::Value::as_str).ok_or("target needs module+name or function")?;
+    let module = target
+        .get("module")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("target needs module+name or function")?;
+    let name = target
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("target needs module+name or function")?;
     Ok(CallTarget::ByName {
         module: module.to_owned(),
         name: name.to_owned(),

@@ -30,6 +30,8 @@ Canonical machine-native virtual machine and execution runtime for MNCS bytecode
 
 `mncs-vm` is the execution layer between compiler-produced MNCS VM artifacts and the wider MNCS runtime environment. It is intended to provide a deterministic core execution model, explicit nondeterminism/effect boundaries, capability enforcement, bounded resource accounting, runtime memory semantics, call/task scheduling, structured failure, and identity-preserving observations that other MNCS systems can inspect and verify.
 
+The one-shot `mncs-vm run --provider CAP=FILE` adapter accepts legacy constant-output provider files and the versioned `mncs.vm.structured-file-provider/1` contract. The structured-file provider binds one admitted capability to one exact read path/schema and one exact create-only write path/schema. Its hard limits are 2 MiB per read and 512 KiB per write; configuration can lower these limits but cannot raise them. The adapter transfers typed `ExecutionValue` JSON and does not implement application policy.
+
 This repository began documentation-first; campaign 1 built the first executable foundation (see "Implemented state" below). The research-bytecode interpreter inside `mncs-language` was not copied: it serves as a read-only differential oracle while the VM executes through its own engine under VM-owned runtime rules.
 
 ## Implemented state (campaign 1)
