@@ -89,10 +89,7 @@ fn first_instruction(admitted: &mncs_vm::admit::Admitted, name_hint: &str) -> (S
             || function.identity.0.contains(name_hint)
         {
             let instruction = &function.blocks[0].instructions[0];
-            return (
-                instruction.identity.0.clone(),
-                function.identity.0.clone(),
-            );
+            return (instruction.identity.0.clone(), function.identity.0.clone());
         }
     }
     panic!("no function matching {name_hint}");
@@ -114,10 +111,7 @@ fn first_call_instruction(
                         instruction.kind,
                         mncs_model::SsaInstructionKind::Call { .. }
                     ) {
-                        return (
-                            instruction.identity.0.clone(),
-                            function.identity.0.clone(),
-                        );
+                        return (instruction.identity.0.clone(), function.identity.0.clone());
                     }
                 }
             }
@@ -141,14 +135,22 @@ fn debug_run_matches_oneshot() {
     let mut session = Session::open(&admitted);
     let (expected_outcome, expected) = session.call(
         &caps,
-        spec("mncs.vmcorpus.arith.v1", "muladd", vec![i64_arg(6), i64_arg(7), i64_arg(8)]),
+        spec(
+            "mncs.vmcorpus.arith.v1",
+            "muladd",
+            vec![i64_arg(6), i64_arg(7), i64_arg(8)],
+        ),
     );
     assert_eq!(expected_outcome, Outcome::Completed);
 
     let mut session = Session::open(&admitted);
     let started = session.start_debug(
         &caps,
-        spec("mncs.vmcorpus.arith.v1", "muladd", vec![i64_arg(6), i64_arg(7), i64_arg(8)]),
+        spec(
+            "mncs.vmcorpus.arith.v1",
+            "muladd",
+            vec![i64_arg(6), i64_arg(7), i64_arg(8)],
+        ),
         bounded_config(),
     );
     let finished = match started {
@@ -168,7 +170,11 @@ fn debug_run_matches_oneshot() {
         mncs_model::EXECUTION_OBSERVATION_SCHEMA_VERSION
     );
     assert!(
-        finished.stream.execution_identity.0.starts_with("mncs:vm:execution:"),
+        finished
+            .stream
+            .execution_identity
+            .0
+            .starts_with("mncs:vm:execution:"),
         "{}",
         finished.stream.execution_identity.0
     );
@@ -203,8 +209,18 @@ fn operation_results_pair_with_enters_across_calls() {
         DebugStart::Stopped(_, stop) => panic!("unexpected stop: {stop:?}"),
     };
     assert_eq!(finished.outcome, Outcome::Completed);
-    let enters = finished.stream.events.iter().filter(|event| event.kind == "operation_enter").count();
-    let results = finished.stream.events.iter().filter(|event| event.kind == "operation_result").count();
+    let enters = finished
+        .stream
+        .events
+        .iter()
+        .filter(|event| event.kind == "operation_enter")
+        .count();
+    let results = finished
+        .stream
+        .events
+        .iter()
+        .filter(|event| event.kind == "operation_result")
+        .count();
     assert_eq!(enters, results, "enter/result pairing");
     assert!(enters > 3, "nested calls observed: {enters}");
     // Each result names the same operation as its enter.
@@ -212,10 +228,14 @@ fn operation_results_pair_with_enters_across_calls() {
     let mut results_by_op = std::collections::BTreeMap::new();
     for event in &finished.stream.events {
         if event.kind == "operation_enter" {
-            *enters_by_op.entry(event.operation.clone().unwrap().0).or_insert(0) += 1;
+            *enters_by_op
+                .entry(event.operation.clone().unwrap().0)
+                .or_insert(0) += 1;
         }
         if event.kind == "operation_result" {
-            *results_by_op.entry(event.operation.clone().unwrap().0).or_insert(0) += 1;
+            *results_by_op
+                .entry(event.operation.clone().unwrap().0)
+                .or_insert(0) += 1;
         }
     }
     assert_eq!(enters_by_op, results_by_op);
@@ -236,7 +256,11 @@ fn operation_breakpoint_stops_and_resumes() {
     });
     let started = session.start_debug(
         &caps,
-        spec("mncs.vmcorpus.arith.v1", "add2", vec![i64_arg(3), i64_arg(4)]),
+        spec(
+            "mncs.vmcorpus.arith.v1",
+            "add2",
+            vec![i64_arg(3), i64_arg(4)],
+        ),
         config,
     );
     let (mut live, stop) = match started {
@@ -245,7 +269,10 @@ fn operation_breakpoint_stops_and_resumes() {
     };
     assert_eq!(stop.stop_sequence, 1);
     assert_eq!(stop.safe_point.kind, "operation");
-    assert_eq!(stop.safe_point.instruction.as_deref(), Some(instruction.as_str()));
+    assert_eq!(
+        stop.safe_point.instruction.as_deref(),
+        Some(instruction.as_str())
+    );
     assert_eq!(stop.safe_point.depth, 0);
     assert!(
         stop.reasons.iter().any(|reason| matches!(
@@ -260,7 +287,9 @@ fn operation_breakpoint_stops_and_resumes() {
     assert!(stop.state_digest.starts_with("sha256:"));
 
     // Typed inspection while stopped: arguments are visible.
-    let stack = live.inspect_stack(8, 32, 4096).expect("inspect while stopped");
+    let stack = live
+        .inspect_stack(8, 32, 4096)
+        .expect("inspect while stopped");
     assert_eq!(stack.frames.len(), 1);
     assert_eq!(stack.frames[0].depth, 0);
     assert!(stack.frames[0].values.len() >= 2, "{:?}", stack.frames[0]);
@@ -293,7 +322,11 @@ fn stale_and_foreign_tokens_fail_closed() {
     });
     let started = session.start_debug(
         &caps,
-        spec("mncs.vmcorpus.arith.v1", "add2", vec![i64_arg(1), i64_arg(2)]),
+        spec(
+            "mncs.vmcorpus.arith.v1",
+            "add2",
+            vec![i64_arg(1), i64_arg(2)],
+        ),
         config,
     );
     let (mut live, stop) = match started {
@@ -347,7 +380,9 @@ fn step_in_over_out_follow_frames() {
         LiveEvent::Finished(_) => panic!("step in should stop in the callee"),
     };
     assert!(
-        stop.reasons.iter().any(|reason| matches!(reason, StopReason::Step)),
+        stop.reasons
+            .iter()
+            .any(|reason| matches!(reason, StopReason::Step)),
         "{:?}",
         stop.reasons
     );
@@ -364,7 +399,9 @@ fn step_in_over_out_follow_frames() {
         LiveEvent::Finished(_) => panic!("step out should stop in the caller"),
     };
     assert!(
-        stop.reasons.iter().any(|reason| matches!(reason, StopReason::StepOut)),
+        stop.reasons
+            .iter()
+            .any(|reason| matches!(reason, StopReason::StepOut)),
         "{:?}",
         stop.reasons
     );
@@ -410,7 +447,9 @@ fn step_over_skips_nested_calls() {
         LiveEvent::Finished(finished) => panic!("step over finished early: {finished:?}"),
     };
     assert!(
-        stop.reasons.iter().any(|reason| matches!(reason, StopReason::StepOver)),
+        stop.reasons
+            .iter()
+            .any(|reason| matches!(reason, StopReason::StepOver)),
         "{:?}",
         stop.reasons
     );
@@ -470,10 +509,9 @@ fn function_entry_stop_names_callee_entry() {
         }
         LiveEvent::Stopped(next) => {
             assert!(
-                next.reasons.iter().any(|reason| matches!(
-                    reason,
-                    StopReason::FunctionEntry { .. }
-                )),
+                next.reasons
+                    .iter()
+                    .any(|reason| matches!(reason, StopReason::FunctionEntry { .. })),
                 "{:?}",
                 next.reasons
             );
@@ -498,7 +536,11 @@ fn failure_suspends_at_terminal_boundary() {
     let mut session = Session::open(&admitted);
     let started = session.start_debug(
         &caps,
-        spec("mncs.vmcorpus.neg.v1", "div_or_fail", vec![i64_arg(1), i64_arg(0)]),
+        spec(
+            "mncs.vmcorpus.neg.v1",
+            "div_or_fail",
+            vec![i64_arg(1), i64_arg(0)],
+        ),
         bounded_config(),
     );
     let (mut live, stop) = match started {
@@ -507,7 +549,9 @@ fn failure_suspends_at_terminal_boundary() {
     };
     assert_eq!(stop.safe_point.kind, "terminal");
     assert!(
-        stop.reasons.iter().any(|reason| matches!(reason, StopReason::FailureOrTrap)),
+        stop.reasons
+            .iter()
+            .any(|reason| matches!(reason, StopReason::FailureOrTrap)),
         "{:?}",
         stop.reasons
     );
@@ -683,11 +727,17 @@ fn selected_capture_scopes_values_to_selection() {
     };
     config.stops.push(StopCondition {
         id: "s".to_owned(),
-        target: StopTarget::Operation { instruction: instruction.clone() },
+        target: StopTarget::Operation {
+            instruction: instruction.clone(),
+        },
     });
     let started = session.start_debug(
         &caps,
-        spec("mncs.vmcorpus.arith.v1", "muladd", vec![i64_arg(2), i64_arg(3), i64_arg(4)]),
+        spec(
+            "mncs.vmcorpus.arith.v1",
+            "muladd",
+            vec![i64_arg(2), i64_arg(3), i64_arg(4)],
+        ),
         config,
     );
     let (mut live, stop) = match started {
@@ -709,7 +759,10 @@ fn selected_capture_scopes_values_to_selection() {
         }
     }
     for value in &finished.stream.values {
-        let operation = value.operation.as_ref().expect("selected value names its operation");
+        let operation = value
+            .operation
+            .as_ref()
+            .expect("selected value names its operation");
         assert_eq!(operation.0, instruction, "value {value:?}");
     }
     assert!(!finished.stream.events.is_empty());
@@ -730,7 +783,11 @@ fn value_identity_is_stable_and_deterministic() {
         });
         let started = session.start_debug(
             &caps,
-            spec("mncs.vmcorpus.arith.v1", "add2", vec![i64_arg(3), i64_arg(4)]),
+            spec(
+                "mncs.vmcorpus.arith.v1",
+                "add2",
+                vec![i64_arg(3), i64_arg(4)],
+            ),
             config,
         );
         let (mut live, stop) = match started {
@@ -750,7 +807,11 @@ fn value_identity_is_stable_and_deterministic() {
             .map(|view| view.instance.clone())
             .collect();
         assert_eq!(instances, again, "repeated inspection is stable");
-        (live.execution_id().to_owned(), stop.transition_digest.clone(), instances)
+        (
+            live.execution_id().to_owned(),
+            stop.transition_digest.clone(),
+            instances,
+        )
     };
     let mut first_session = Session::open(&admitted);
     let (first_exec, first_digest, first_instances) = run_once(&mut first_session);
@@ -776,7 +837,11 @@ fn terminate_mid_run_records_termination() {
     });
     let started = session.start_debug(
         &caps,
-        spec("mncs.vmcorpus.arith.v1", "add2", vec![i64_arg(3), i64_arg(4)]),
+        spec(
+            "mncs.vmcorpus.arith.v1",
+            "add2",
+            vec![i64_arg(3), i64_arg(4)],
+        ),
         config,
     );
     let (mut live, stop) = match started {
@@ -791,7 +856,9 @@ fn terminate_mid_run_records_termination() {
         finished.outcome
     );
     // Terminated state stays inspectable.
-    let stack = live.inspect_stack(8, 32, 4096).expect("inspect after terminate");
+    let stack = live
+        .inspect_stack(8, 32, 4096)
+        .expect("inspect after terminate");
     assert!(!stack.frames.is_empty());
 }
 
@@ -802,7 +869,11 @@ fn stop_binding_is_validated() {
     let mut session = Session::open(&admitted);
     let started = session.start_debug(
         &caps,
-        spec("mncs.vmcorpus.arith.v1", "add2", vec![i64_arg(3), i64_arg(4)]),
+        spec(
+            "mncs.vmcorpus.arith.v1",
+            "add2",
+            vec![i64_arg(3), i64_arg(4)],
+        ),
         DebugConfig {
             policy: mncs_model::ExecutionObservationPolicy::default(),
             stops: Vec::new(),
@@ -829,7 +900,11 @@ fn stop_binding_is_validated() {
     });
     let started = session.start_debug(
         &caps,
-        spec("mncs.vmcorpus.arith.v1", "add2", vec![i64_arg(3), i64_arg(4)]),
+        spec(
+            "mncs.vmcorpus.arith.v1",
+            "add2",
+            vec![i64_arg(3), i64_arg(4)],
+        ),
         config,
     );
     let (mut live, stop) = match started {
@@ -846,7 +921,12 @@ fn stop_binding_is_validated() {
         Err(DebugError::InvalidStop { .. })
     ));
     assert!(matches!(
-        live.bind_stop(StopTarget::Operation { instruction: String::new() }, None),
+        live.bind_stop(
+            StopTarget::Operation {
+                instruction: String::new()
+            },
+            None
+        ),
         Err(DebugError::InvalidStop { .. })
     ));
     let bound = live
@@ -878,7 +958,9 @@ fn debug_contract_reports_its_shape() {
     let unsupported = mncs_vm::debug::unsupported_debug_capabilities();
     assert!(!unsupported.is_empty());
     assert!(
-        unsupported.iter().any(|entry| entry.get("capability").is_some_and(|name| name == "live_watch_stop")),
+        unsupported.iter().any(|entry| entry
+            .get("capability")
+            .is_some_and(|name| name == "live_watch_stop")),
         "{unsupported:?}"
     );
 }
@@ -892,7 +974,8 @@ fn debug_identities_are_derivation_stable() {
     // Freeze the historical artifact identity for this derivation witness.
     // Direct lowering/encoding legitimately changes artifact content identity;
     // the debug identity algorithm must still reproduce this fixed scenario.
-    admitted.artifact.artifact_id = "sha256:c453e45c682a425eea6a56598005bff1a2aea8840f7d117e955f6f10fedaa7ab".into();
+    admitted.artifact.artifact_id =
+        "sha256:c453e45c682a425eea6a56598005bff1a2aea8840f7d117e955f6f10fedaa7ab".into();
     let (instruction, _) = first_instruction(&admitted, "add2");
     let caps = CapabilityEnv::empty();
     let mut session = Session::open(&admitted);
@@ -903,7 +986,11 @@ fn debug_identities_are_derivation_stable() {
     });
     let started = session.start_debug(
         &caps,
-        spec("mncs.vmcorpus.arith.v1", "add2", vec![i64_arg(3), i64_arg(4)]),
+        spec(
+            "mncs.vmcorpus.arith.v1",
+            "add2",
+            vec![i64_arg(3), i64_arg(4)],
+        ),
         config,
     );
     let (mut live, stop) = match started {

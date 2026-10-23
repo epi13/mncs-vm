@@ -25,6 +25,8 @@ use mncs_vm::value::{from_wire, to_wire, Value};
 
 const CLI_SCHEMA_VERSION: &str = "mncs.vm.debug-cli/1";
 const STRUCTURED_FILE_PROVIDER_SCHEMA: &str = "mncs.vm.structured-file-provider/1";
+const STRUCTURED_FILE_PROVIDER_SCHEMA_MULTI_OUTPUT: &str = "mncs.vm.structured-file-provider/2";
+const STRUCTURED_DIGEST_PROVIDER_SCHEMA: &str = "mncs.vm.structured-digest-provider/1";
 const MAX_STRUCTURED_FILE_INPUT_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_STRUCTURED_FILE_OUTPUT_BYTES: u64 = 512 * 1024;
 
@@ -339,7 +341,7 @@ fn cmd_run(argv: &[String]) -> i32 {
         Ok(envelope) => envelope,
         Err(message) => return run_error(&message),
     };
-    let caps = match load_capabilities(&providers) {
+    let caps = match load_capabilities_for_artifact(&providers, &admitted) {
         Ok(caps) => caps,
         Err(message) => return run_error(&message),
     };
@@ -654,7 +656,32 @@ fn load_policy(path: &Path) -> Result<mncs_model::ExecutionObservationPolicy, St
     serde_json::from_str(&text).map_err(|error| format!("bad policy {}: {error}", path.display()))
 }
 
+#[cfg(test)]
 fn load_capabilities(providers: &[(String, PathBuf)]) -> Result<CapabilityEnv, String> {
+    load_capabilities_with_artifact(providers, None)
+}
+
+fn load_capabilities_for_artifact(
+    providers: &[(String, PathBuf)],
+    admitted: &Admitted,
+) -> Result<CapabilityEnv, String> {
+    let module = admitted
+        .ssa_module()
+        .ok_or_else(|| "admitted artifact has no selected SSA module".to_owned())?;
+    load_capabilities_with_artifact(
+        providers,
+        Some((
+            admitted.artifact_id(),
+            &admitted.artifact.requirements.capabilities,
+            module,
+        )),
+    )
+}
+
+fn load_capabilities_with_artifact(
+    providers: &[(String, PathBuf)],
+    artifact_context: Option<(&str, &[String], &mncs_model::SsaModule)>,
+) -> Result<CapabilityEnv, String> {
     let mut caps = CapabilityEnv::empty();
     let mut bound = BTreeSet::new();
     for (capability, path) in providers {
@@ -676,15 +703,34 @@ fn load_capabilities(providers: &[(String, PathBuf)]) -> Result<CapabilityEnv, S
             .get("schema_version")
             .and_then(serde_json::Value::as_str)
         {
-            if schema != STRUCTURED_FILE_PROVIDER_SCHEMA {
-                return Err(format!(
-                    "unsupported provider schema {schema:?} in {}",
-                    path.display()
-                ));
+            if schema == STRUCTURED_FILE_PROVIDER_SCHEMA
+                || schema == STRUCTURED_FILE_PROVIDER_SCHEMA_MULTI_OUTPUT
+            {
+                let provider = StructuredFileProvider::from_document(capability, &document)?;
+                caps = caps.bind(capability, provider);
+                continue;
             }
-            let provider = StructuredFileProvider::from_document(capability, &document)?;
-            caps = caps.bind(capability, provider);
-            continue;
+            if schema == STRUCTURED_DIGEST_PROVIDER_SCHEMA {
+                let Some((artifact_identity, required_capabilities, module)) = artifact_context
+                else {
+                    return Err(
+                        "structured-digest provider requires an admitted artifact".to_owned()
+                    );
+                };
+                let provider = StructuredDigestProvider::from_document(
+                    capability,
+                    &document,
+                    artifact_identity,
+                    required_capabilities,
+                    module,
+                )?;
+                caps = caps.bind(capability, provider);
+                continue;
+            }
+            return Err(format!(
+                "unsupported provider schema {schema:?} in {}",
+                path.display()
+            ));
         }
         let identity = document
             .get("identity")
@@ -721,7 +767,10 @@ struct StructuredFileProviderDocument {
     schema_version: String,
     identity: String,
     read: StructuredFileEndpoint,
-    write: StructuredFileEndpoint,
+    #[serde(default)]
+    write: Option<StructuredFileEndpoint>,
+    #[serde(default)]
+    writes: Vec<StructuredFileEndpoint>,
     #[serde(default)]
     max_input_bytes: Option<u64>,
     #[serde(default)]
@@ -733,8 +782,7 @@ struct StructuredFileProvider {
     identity: String,
     input_path: PathBuf,
     input_schema: String,
-    output_path: PathBuf,
-    output_schema: String,
+    write_endpoints: Vec<(PathBuf, String)>,
     max_input_bytes: u64,
     max_output_bytes: u64,
 }
@@ -743,15 +791,37 @@ impl StructuredFileProvider {
     fn from_document(capability: &str, document: &serde_json::Value) -> Result<Self, String> {
         let config: StructuredFileProviderDocument = serde_json::from_value(document.clone())
             .map_err(|error| format!("bad structured-file provider: {error}"))?;
-        if config.schema_version != STRUCTURED_FILE_PROVIDER_SCHEMA
-            || config.identity.trim().is_empty()
+        if !matches!(
+            config.schema_version.as_str(),
+            STRUCTURED_FILE_PROVIDER_SCHEMA | STRUCTURED_FILE_PROVIDER_SCHEMA_MULTI_OUTPUT
+        ) || config.identity.trim().is_empty()
             || config.identity.len() > 128
             || config.read.schema.trim().is_empty()
             || config.read.schema.len() > 128
-            || config.write.schema.trim().is_empty()
-            || config.write.schema.len() > 128
         {
             return Err("structured-file provider identity or schema is invalid".to_owned());
+        }
+        let raw_writes = match config.schema_version.as_str() {
+            STRUCTURED_FILE_PROVIDER_SCHEMA
+                if config.writes.is_empty() && config.write.is_some() =>
+            {
+                vec![config.write.expect("checked above")]
+            }
+            STRUCTURED_FILE_PROVIDER_SCHEMA_MULTI_OUTPUT
+                if config.write.is_none() && !config.writes.is_empty() =>
+            {
+                config.writes
+            }
+            _ => return Err("structured-file provider write endpoints are invalid".to_owned()),
+        };
+        if raw_writes.len() > 4
+            || raw_writes
+                .iter()
+                .any(|write| write.schema.trim().is_empty() || write.schema.len() > 128)
+        {
+            return Err(
+                "structured-file provider write endpoint count or schema is invalid".to_owned(),
+            );
         }
         let max_input_bytes = config
             .max_input_bytes
@@ -767,17 +837,21 @@ impl StructuredFileProvider {
             return Err("structured-file provider exceeds its hard byte bounds".to_owned());
         }
         let input_path = canonical_provider_path(&config.read.path, true, "input")?;
-        let output_path = canonical_provider_path(&config.write.path, false, "output")?;
-        if input_path == output_path {
-            return Err("structured-file provider input and output paths must differ".to_owned());
+        let mut write_endpoints = Vec::with_capacity(raw_writes.len());
+        let mut write_paths = BTreeSet::new();
+        for write in raw_writes {
+            let path = canonical_provider_path(&write.path, false, "output")?;
+            if path == input_path || !write_paths.insert(path.clone()) {
+                return Err("structured-file provider paths must be distinct".to_owned());
+            }
+            write_endpoints.push((path, write.schema));
         }
         Ok(Self {
             capability: capability.to_owned(),
             identity: config.identity,
             input_path,
             input_schema: config.read.schema,
-            output_path,
-            output_schema: config.write.schema,
+            write_endpoints,
             max_input_bytes,
             max_output_bytes,
         })
@@ -833,9 +907,16 @@ impl StructuredFileProvider {
         }
         let path = value_text(&request.inputs[0]).map_err(|error| self.failure(error))?;
         let schema = value_text(&request.inputs[1]).map_err(|error| self.failure(error))?;
-        if PathBuf::from(path) != self.output_path || schema != self.output_schema {
+        let requested_path = PathBuf::from(path);
+        let Some((output_path, _)) =
+            self.write_endpoints
+                .iter()
+                .find(|(admitted_path, admitted_schema)| {
+                    admitted_path == &requested_path && admitted_schema == &schema
+                })
+        else {
             return Err(self.failure("structured_write path or schema is not admitted"));
-        }
+        };
         let bytes = serde_json::to_vec(&to_wire(&request.inputs[2]))
             .map_err(|error| self.failure(format!("encode typed output: {error}")))?;
         if bytes.len() as u64 > self.max_output_bytes {
@@ -849,7 +930,7 @@ impl StructuredFileProvider {
             options.mode(0o600);
         }
         let mut file = options
-            .open(&self.output_path)
+            .open(output_path)
             .map_err(|error| self.failure(format!("create output: {error}")))?;
         file.write_all(&bytes)
             .and_then(|()| file.sync_all())
@@ -876,6 +957,254 @@ impl Provider for StructuredFileProvider {
             "structured_write" => self.invoke_write(request),
             operation => Err(self.failure(format!("operation {operation:?} is not supported"))),
         }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StructuredDigestProviderDocument {
+    schema_version: String,
+    identity: String,
+    artifact_identity: String,
+    capability_identity: String,
+}
+
+/// An explicit runtime binding for the Language-owned `structured_digest`
+/// operation. The provider supplies the typed external projection through
+/// mncs-model; it does not define or duplicate that projection.
+struct StructuredDigestProvider {
+    alias: String,
+    identity: String,
+    module: mncs_model::SsaModule,
+}
+
+impl StructuredDigestProvider {
+    fn from_document(
+        alias: &str,
+        document: &serde_json::Value,
+        artifact_identity: &str,
+        required_capabilities: &[String],
+        module: &mncs_model::SsaModule,
+    ) -> Result<Self, String> {
+        let config: StructuredDigestProviderDocument = serde_json::from_value(document.clone())
+            .map_err(|error| format!("bad structured-digest provider: {error}"))?;
+        if config.schema_version != STRUCTURED_DIGEST_PROVIDER_SCHEMA
+            || config.identity.trim().is_empty()
+            || config.identity.len() > 128
+            || config.artifact_identity != artifact_identity
+            || !required_capabilities.contains(&config.capability_identity)
+            || config.capability_identity.len() > 1024
+        {
+            return Err(
+                "structured-digest provider identity, artifact, or capability is not admitted"
+                    .to_owned(),
+            );
+        }
+        Ok(Self {
+            alias: alias.to_owned(),
+            identity: config.identity,
+            module: module.clone(),
+        })
+    }
+
+    fn failure(&self, detail: impl Into<String>) -> Outcome {
+        Outcome::ProviderFailure {
+            provider: self.identity.clone(),
+            detail: detail.into(),
+        }
+    }
+
+    fn digest(
+        &self,
+        request: &EffectRequest,
+        input_types: &[mncs_model::BodyType],
+    ) -> Result<EffectResponse, Outcome> {
+        if request.capability != self.alias {
+            return Err(self.failure("capability alias mismatch"));
+        }
+        if request.operation != "structured_digest"
+            || request.inputs.len() != 1
+            || input_types.len() != 1
+        {
+            return Err(
+                self.failure("structured_digest requires one value and its verified SSA type")
+            );
+        }
+        let wire = to_wire(&request.inputs[0]);
+        let digest = mncs_model::structured_digest_ssa_value(&self.module, &input_types[0], &wire)
+            .map_err(|error| self.failure(format!("Language rejected typed value: {error}")))?;
+        Ok(EffectResponse {
+            provider: self.identity.clone(),
+            outputs: vec![Value::Sequence {
+                elements: std::sync::Arc::new(digest.into_iter().map(Value::Byte).collect()),
+            }],
+            note: "Language-owned canonical structured digest".to_owned(),
+        })
+    }
+}
+
+impl Provider for StructuredDigestProvider {
+    fn identity(&self) -> &str {
+        &self.identity
+    }
+
+    fn invoke(&self, request: &EffectRequest) -> Result<EffectResponse, Outcome> {
+        self.digest(request, &[])
+    }
+
+    fn invoke_typed(
+        &self,
+        request: &EffectRequest,
+        input_types: &[mncs_model::BodyType],
+    ) -> Result<EffectResponse, Outcome> {
+        self.digest(request, input_types)
+    }
+}
+
+#[cfg(test)]
+mod structured_digest_provider_tests {
+    use super::{
+        EffectRequest, Provider, StructuredDigestProvider, STRUCTURED_DIGEST_PROVIDER_SCHEMA,
+    };
+    use mncs_model::{
+        BodyType, SemanticId, SsaFiniteType, SsaFiniteVariant, SsaModule, SsaTraceMap,
+    };
+    use mncs_vm::outcome::Outcome;
+    use mncs_vm::value::Value;
+    use sha2::{Digest, Sha256};
+    use std::sync::Arc;
+
+    const ARTIFACT: &str =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const CAPABILITY: &str =
+        "mncs:0.2:capability:mncs.test.provider::run_selected_batch::provider_digest";
+    const ALIAS: &str = "provider_digest";
+
+    fn module_and_value() -> (SsaModule, BodyType, Value) {
+        let finite_identity = SemanticId("mncs:0.2:finite-type:test::Verdict::".to_owned());
+        let variant_identity =
+            SemanticId("mncs:0.2:finite-variant:test::Verdict::PASS::".to_owned());
+        let module = SsaModule {
+            schema_version: mncs_model::SSA_SCHEMA_VERSION.to_owned(),
+            identity: SemanticId("mncs:test:ssa".to_owned()),
+            semantic_identity: SemanticId("mncs:test:program".to_owned()),
+            hir_fingerprint: "00".repeat(32),
+            binding_table: None,
+            record_types: Vec::new(),
+            finite_types: vec![SsaFiniteType {
+                identity: finite_identity.clone(),
+                name: "Verdict".to_owned(),
+                variants: vec![SsaFiniteVariant {
+                    identity: variant_identity.clone(),
+                    name: "PASS".to_owned(),
+                    discriminant: 0,
+                    payload: Vec::new(),
+                }],
+            }],
+            functions: Vec::new(),
+            obligations: Vec::new(),
+            trace: SsaTraceMap {
+                entries: Vec::new(),
+            },
+            transformations: Vec::new(),
+            generic_specializations: Vec::new(),
+            proof_relationships: Vec::new(),
+        };
+        let ty = BodyType::Finite {
+            identity: finite_identity.clone(),
+            name: "Verdict".to_owned(),
+        };
+        let value = Value::Finite {
+            type_id: finite_identity.0,
+            variant_id: variant_identity.0,
+            discriminant: 0,
+            payload: Arc::new(Vec::new()),
+        };
+        (module, ty, value)
+    }
+
+    fn config(capability_identity: &str, artifact_identity: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": STRUCTURED_DIGEST_PROVIDER_SCHEMA,
+            "identity": "mncs-forge.native-application.structured-digest/1",
+            "artifact_identity": artifact_identity,
+            "capability_identity": capability_identity,
+        })
+    }
+
+    fn request(capability: &str, value: Value) -> EffectRequest {
+        EffectRequest {
+            capability: capability.to_owned(),
+            operation: "structured_digest".to_owned(),
+            inputs: vec![value],
+        }
+    }
+
+    #[test]
+    fn digest_provider_uses_ssa_type_and_language_external_projection() {
+        let (module, ty, value) = module_and_value();
+        let provider = StructuredDigestProvider::from_document(
+            ALIAS,
+            &config(CAPABILITY, ARTIFACT),
+            ARTIFACT,
+            &[CAPABILITY.to_owned()],
+            &module,
+        )
+        .expect("exact artifact and capability binding is admitted");
+        assert!(matches!(
+            provider.invoke(&request(ALIAS, value.clone())),
+            Err(Outcome::ProviderFailure { .. })
+        ));
+        let response = provider
+            .invoke_typed(&request(ALIAS, value), &[ty])
+            .expect("typed digest succeeds");
+        let expected = Sha256::digest(b"\"PASS\"");
+        assert_eq!(
+            response.outputs,
+            vec![Value::Sequence {
+                elements: Arc::new(expected.iter().copied().map(Value::Byte).collect()),
+            }]
+        );
+        assert_eq!(
+            response.provider,
+            "mncs-forge.native-application.structured-digest/1"
+        );
+    }
+
+    #[test]
+    fn digest_provider_rejects_wrong_artifact_capability_and_alias() {
+        let (module, ty, value) = module_and_value();
+        assert!(StructuredDigestProvider::from_document(
+            ALIAS,
+            &config(
+                CAPABILITY,
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ),
+            ARTIFACT,
+            &[CAPABILITY.to_owned()],
+            &module,
+        )
+        .is_err());
+        assert!(StructuredDigestProvider::from_document(
+            ALIAS,
+            &config("mncs:unadmitted", ARTIFACT),
+            ARTIFACT,
+            &[CAPABILITY.to_owned()],
+            &module,
+        )
+        .is_err());
+        let provider = StructuredDigestProvider::from_document(
+            ALIAS,
+            &config(CAPABILITY, ARTIFACT),
+            ARTIFACT,
+            &[CAPABILITY.to_owned()],
+            &module,
+        )
+        .unwrap();
+        assert!(matches!(
+            provider.invoke_typed(&request("wrong_alias", value), &[ty]),
+            Err(Outcome::ProviderFailure { .. })
+        ));
     }
 }
 
@@ -1080,6 +1409,81 @@ mod structured_file_provider_tests {
                 signed: false,
             }
         );
+    }
+
+    #[test]
+    fn multi_output_structured_file_provider_binds_each_write_schema_and_path() {
+        let root = TestDirectory::new();
+        let input_path = root.0.join("request.json");
+        let result_path = root.0.join("result.json");
+        let check_path = root.0.join("check.json");
+        let input = Value::Integer {
+            value: 41,
+            bits: 64,
+            signed: false,
+        };
+        std::fs::write(
+            &input_path,
+            serde_json::to_vec(&to_wire(&input)).expect("encode typed request"),
+        )
+        .expect("write typed request");
+        let provider_path = root.0.join("provider.json");
+        let document = serde_json::json!({
+            "schema_version": "mncs.vm.structured-file-provider/2",
+            "identity": "mncs-test-multi-output-provider/1",
+            "read": {"path": input_path, "schema": REQUEST_SCHEMA},
+            "writes": [
+                {"path": result_path, "schema": RESULT_SCHEMA},
+                {"path": check_path, "schema": "mncs.test-check/1"},
+            ],
+        });
+        std::fs::write(
+            &provider_path,
+            serde_json::to_vec(&document).expect("encode provider configuration"),
+        )
+        .expect("write provider configuration");
+        let caps = bind(&provider_path);
+        let first = caps
+            .dispatch(&request(
+                CAPABILITY,
+                "structured_write",
+                vec![
+                    bytes(&result_path.to_string_lossy()),
+                    bytes(RESULT_SCHEMA),
+                    input.clone(),
+                ],
+            ))
+            .expect("first admitted write succeeds");
+        let second = caps
+            .dispatch(&request(
+                CAPABILITY,
+                "structured_write",
+                vec![
+                    bytes(&check_path.to_string_lossy()),
+                    bytes("mncs.test-check/1"),
+                    input.clone(),
+                ],
+            ))
+            .expect("second admitted write succeeds");
+        assert_eq!(first.outputs, second.outputs);
+        for path in [&result_path, &check_path] {
+            let wire: mncs_model::ExecutionValue =
+                serde_json::from_slice(&std::fs::read(path).expect("read typed output"))
+                    .expect("decode typed output");
+            assert_eq!(from_wire(&wire), input);
+        }
+        let rejected = caps
+            .dispatch(&request(
+                CAPABILITY,
+                "structured_write",
+                vec![
+                    bytes(&check_path.to_string_lossy()),
+                    bytes(RESULT_SCHEMA),
+                    input,
+                ],
+            ))
+            .unwrap_err();
+        assert!(matches!(rejected, Outcome::ProviderFailure { .. }));
     }
 
     #[test]

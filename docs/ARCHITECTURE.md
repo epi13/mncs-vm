@@ -221,6 +221,11 @@ refusal      v
 
 Provider calls must not silently inherit unrestricted host authority from the VM process.
 
+The structured-digest CLI provider is bound to the admitted artifact and a required capability
+identity. It receives the operand type resolved from the active SSA function and delegates the
+canonical external projection and SHA-256 contract to `mncs-model`; it does not infer types from
+runtime value shape or define a second encoding.
+
 The first implementation may use host-language interfaces, but those interfaces should model explicit capability/provider contracts.
 
 ### 10. Resource metering
