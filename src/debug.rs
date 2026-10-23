@@ -249,7 +249,10 @@ impl std::fmt::Display for DebugError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DebugError::StaleToken { expected_sequence } => {
-                write!(f, "stale continuation token; stop {expected_sequence} is current")
+                write!(
+                    f,
+                    "stale continuation token; stop {expected_sequence} is current"
+                )
             }
             DebugError::BadToken { detail } => write!(f, "bad continuation token: {detail}"),
             DebugError::AlreadyFinished => write!(f, "execution already finished"),
@@ -318,10 +321,18 @@ impl StopIndexes {
         for (index, condition) in stops.iter().enumerate() {
             match &condition.target {
                 StopTarget::Operation { instruction } => {
-                    indexes.by_operation.entry(instruction.clone()).or_default().push(index);
+                    indexes
+                        .by_operation
+                        .entry(instruction.clone())
+                        .or_default()
+                        .push(index);
                 }
                 StopTarget::Function { function } => {
-                    indexes.by_function.entry(function.clone()).or_default().push(index);
+                    indexes
+                        .by_function
+                        .entry(function.clone())
+                        .or_default()
+                        .push(index);
                 }
                 StopTarget::EffectBoundary { phase } => {
                     if phase == "before" || phase == "both" {
@@ -390,14 +401,13 @@ pub(crate) struct DebugDriver {
 }
 
 impl DebugDriver {
-    pub(crate) fn new(
-        module: &SsaModule,
-        config: DebugConfig,
-        execution_id: String,
-    ) -> Self {
+    pub(crate) fn new(module: &SsaModule, config: DebugConfig, execution_id: String) -> Self {
         let stream = ExecutionObservationStream {
             schema_version: mncs_model::EXECUTION_OBSERVATION_SCHEMA_VERSION.to_owned(),
-            identity: SemanticId(format!("mncs:vm:observation:{}", short_digest(&execution_id))),
+            identity: SemanticId(format!(
+                "mncs:vm:observation:{}",
+                short_digest(&execution_id)
+            )),
             execution_identity: SemanticId(execution_id.clone()),
             policy: config.policy.clone(),
             completeness: ExecutionObservationCompleteness {
@@ -643,8 +653,16 @@ impl DebugDriver {
             .cloned()
             .unwrap_or_else(|| value.kind_tag().to_owned());
         let origin = self.producers.get(binding).map(|id| SemanticId(id.clone()));
-        let frame = self.frame_ids.last().cloned().unwrap_or_else(|| SemanticId("mncs:vm:frame:unknown".to_owned()));
-        let version = self.versions.get(&(frame_seq, binding.to_owned())).map(|entry| entry.0).unwrap_or(0);
+        let frame = self
+            .frame_ids
+            .last()
+            .cloned()
+            .unwrap_or_else(|| SemanticId("mncs:vm:frame:unknown".to_owned()));
+        let version = self
+            .versions
+            .get(&(frame_seq, binding.to_owned()))
+            .map(|entry| entry.0)
+            .unwrap_or(0);
         self.stream.values.push(ExecutionObservedValue {
             identity: instance.clone(),
             logical_identity: SemanticId(binding.to_owned()),
@@ -677,13 +695,15 @@ impl DebugDriver {
             let version = version + 1;
             let instance = mint_value_id(&self.execution_id, frame_seq, binding, version);
             if retain_version {
-                self.versions.insert(key, (version, instance.clone(), value.clone()));
+                self.versions
+                    .insert(key, (version, instance.clone(), value.clone()));
             }
             return instance;
         }
         let instance = mint_value_id(&self.execution_id, frame_seq, binding, 0);
         if retain_version {
-            self.versions.insert(key, (0, instance.clone(), value.clone()));
+            self.versions
+                .insert(key, (0, instance.clone(), value.clone()));
         }
         instance
     }
@@ -696,7 +716,11 @@ impl DebugDriver {
         value: &Value,
     ) -> (SemanticId, u64) {
         let instance = self.instance_identity(frame_seq, binding, value, true);
-        let version = self.versions.get(&(frame_seq, binding.to_owned())).map(|entry| entry.0).unwrap_or(0);
+        let version = self
+            .versions
+            .get(&(frame_seq, binding.to_owned()))
+            .map(|entry| entry.0)
+            .unwrap_or(0);
         (instance, version)
     }
 
@@ -708,7 +732,10 @@ impl DebugDriver {
     }
 
     fn frame_id(&self, depth: usize) -> SemanticId {
-        self.frame_ids.get(depth).cloned().unwrap_or_else(|| SemanticId("mncs:vm:frame:unknown".to_owned()))
+        self.frame_ids
+            .get(depth)
+            .cloned()
+            .unwrap_or_else(|| SemanticId("mncs:vm:frame:unknown".to_owned()))
     }
 
     /// Execution entry: mint the root frame and emit `execution_enter`
@@ -737,9 +764,7 @@ impl DebugDriver {
         }
         let mut inputs = Vec::new();
         for (binding, value) in arguments {
-            if let Some(instance) =
-                self.capture_value(0, binding, "argument", None, value)
-            {
+            if let Some(instance) = self.capture_value(0, binding, "argument", None, value) {
                 inputs.push(instance);
             }
         }
@@ -808,7 +833,10 @@ impl DebugDriver {
         self.position_function = function_index;
         self.position_block = block.to_owned();
         self.position_instruction = Some(instruction.identity.0.clone());
-        self.position_semantic = instruction.semantic_identity.as_ref().map(|id| id.0.clone());
+        self.position_semantic = instruction
+            .semantic_identity
+            .as_ref()
+            .map(|id| id.0.clone());
         if self.emit_enter_arrived(frame_seq, block, ip) {
             // Capture input instances only when the event or its values
             // are actually retained; otherwise both the minted identities
@@ -820,9 +848,13 @@ impl DebugDriver {
             if self.retains_values_for(Some(&operation.0), false) {
                 for input in &instruction.inputs {
                     if let Some(value) = values.get(&input.0) {
-                        if let Some(instance) =
-                            self.capture_value(frame_seq, &input.0, "input", Some(&operation), value)
-                        {
+                        if let Some(instance) = self.capture_value(
+                            frame_seq,
+                            &input.0,
+                            "input",
+                            Some(&operation),
+                            value,
+                        ) {
                             inputs.push(instance);
                         }
                     }
@@ -873,9 +905,13 @@ impl DebugDriver {
         let mut outputs = Vec::new();
         for output in &instruction.outputs {
             if let Some(value) = values.get(&output.identity.0) {
-                if let Some(instance) =
-                    self.capture_value(frame_seq, &output.identity.0, "output", Some(&operation), value)
-                {
+                if let Some(instance) = self.capture_value(
+                    frame_seq,
+                    &output.identity.0,
+                    "output",
+                    Some(&operation),
+                    value,
+                ) {
                     outputs.push(instance);
                 }
             }
@@ -954,7 +990,10 @@ impl DebugDriver {
         returned: &[(String, Value)],
         status: &str,
     ) {
-        let callee = self.frame_ids.pop().unwrap_or_else(|| SemanticId("mncs:vm:frame:unknown".to_owned()));
+        let callee = self
+            .frame_ids
+            .pop()
+            .unwrap_or_else(|| SemanticId("mncs:vm:frame:unknown".to_owned()));
         if !self.captures_events() {
             return;
         }
@@ -1094,8 +1133,7 @@ impl DebugDriver {
                 false,
             );
         }
-        self.effect_after_reasons().into_iter()
-            .collect()
+        self.effect_after_reasons().into_iter().collect()
     }
 
     /// Record-only effect observation (no external boundary crossed):
@@ -1202,7 +1240,11 @@ impl DebugDriver {
             positions.extend(hits.iter().copied());
         }
         if function.semantic_identity.0 != function.identity.0 {
-            if let Some(hits) = self.stop_indexes.by_function.get(&function.semantic_identity.0) {
+            if let Some(hits) = self
+                .stop_indexes
+                .by_function
+                .get(&function.semantic_identity.0)
+            {
                 positions.extend(hits.iter().copied());
             }
         }
@@ -1331,7 +1373,8 @@ impl DebugDriver {
         match &self.last_stop {
             None => true,
             Some((position, kinds)) => {
-                position != &(frame_seq, block.to_owned(), ip) || !kinds.iter().any(|name| name == kind)
+                position != &(frame_seq, block.to_owned(), ip)
+                    || !kinds.iter().any(|name| name == kind)
             }
         }
     }
@@ -1340,7 +1383,13 @@ impl DebugDriver {
     /// accumulate along the hook order at one position
     /// (operation, effect_before, effect_after) so a resume never
     /// ping-pongs between stops at the same instruction.
-    pub(crate) fn note_suspended(&mut self, frame_seq: u64, block: String, ip: usize, kinds: Vec<String>) {
+    pub(crate) fn note_suspended(
+        &mut self,
+        frame_seq: u64,
+        block: String,
+        ip: usize,
+        kinds: Vec<String>,
+    ) {
         self.last_stop = Some(((frame_seq, block, ip), kinds));
     }
 
@@ -1439,7 +1488,12 @@ impl DebugDriver {
     }
 
     /// Build an operation safe point for the recorded position.
-    pub(crate) fn operation_safe_point(&self, frame_seq: u64, depth: usize, steps: u64) -> SafePoint {
+    pub(crate) fn operation_safe_point(
+        &self,
+        frame_seq: u64,
+        depth: usize,
+        steps: u64,
+    ) -> SafePoint {
         let function = &self.module.functions[self.position_function];
         SafePoint {
             kind: "operation".to_owned(),
@@ -1456,7 +1510,13 @@ impl DebugDriver {
     }
 
     /// Build an effect safe point for the recorded position.
-    pub(crate) fn effect_safe_point(&self, frame_seq: u64, depth: usize, steps: u64, phase: &str) -> SafePoint {
+    pub(crate) fn effect_safe_point(
+        &self,
+        frame_seq: u64,
+        depth: usize,
+        steps: u64,
+        phase: &str,
+    ) -> SafePoint {
         let mut point = self.operation_safe_point(frame_seq, depth, steps);
         point.kind = if phase == "before" {
             "effect_before".to_owned()
@@ -1467,7 +1527,12 @@ impl DebugDriver {
     }
 
     /// Build a terminal safe point for the recorded position.
-    pub(crate) fn terminal_safe_point(&self, frame_seq: u64, depth: usize, steps: u64) -> SafePoint {
+    pub(crate) fn terminal_safe_point(
+        &self,
+        frame_seq: u64,
+        depth: usize,
+        steps: u64,
+    ) -> SafePoint {
         let mut point = self.operation_safe_point(frame_seq, depth, steps);
         point.kind = "terminal".to_owned();
         point
@@ -1476,7 +1541,8 @@ impl DebugDriver {
     /// Snapshot the stream without consuming the driver (bounded).
     pub(crate) fn stream_snapshot(&self) -> ExecutionObservationStream {
         let mut stream = self.stream.clone();
-        let truncated = self.dropped_events > 0 || self.dropped_values > 0 || self.dropped_effects > 0;
+        let truncated =
+            self.dropped_events > 0 || self.dropped_values > 0 || self.dropped_effects > 0;
         stream.completeness = ExecutionObservationCompleteness {
             status: if matches!(self.capture(), ObservationCapturePolicy::None) {
                 ObservationCompletenessStatus::Disabled
@@ -1622,9 +1688,12 @@ impl<'a> LiveExecution<'a> {
         if self.finished {
             return Err(DebugError::AlreadyFinished);
         }
-        let outcome = self.pending_terminal.clone().unwrap_or(Outcome::Terminated {
-            detail: format!("terminated by debugger at stop {}", self.stop_sequence),
-        });
+        let outcome = self
+            .pending_terminal
+            .clone()
+            .unwrap_or(Outcome::Terminated {
+                detail: format!("terminated by debugger at stop {}", self.stop_sequence),
+            });
         // A mid-run terminate still closes the observation stream
         // honestly: the terminal hook runs once for event closure.
         if self.pending_terminal.is_none() {
@@ -1634,7 +1703,11 @@ impl<'a> LiveExecution<'a> {
     }
 
     /// Bind a stop condition before or during execution.
-    pub fn bind_stop(&mut self, target: StopTarget, id: Option<String>) -> Result<StopCondition, DebugError> {
+    pub fn bind_stop(
+        &mut self,
+        target: StopTarget,
+        id: Option<String>,
+    ) -> Result<StopCondition, DebugError> {
         if self.finished {
             return Err(DebugError::AlreadyFinished);
         }
@@ -1656,7 +1729,12 @@ impl<'a> LiveExecution<'a> {
     /// Bounded typed stack view. Read-only: repeated inspection of
     /// unchanged stopped state is cheap (no re-execution, no stream
     /// retention).
-    pub fn inspect_stack(&mut self, max_frames: usize, max_values: usize, max_value_bytes: usize) -> Result<StackView, DebugError> {
+    pub fn inspect_stack(
+        &mut self,
+        max_frames: usize,
+        max_values: usize,
+        max_value_bytes: usize,
+    ) -> Result<StackView, DebugError> {
         if max_frames == 0 {
             return Err(DebugError::InspectionBound {
                 detail: "max_frames must be positive".to_owned(),
@@ -1678,7 +1756,13 @@ impl<'a> LiveExecution<'a> {
             max_value_bytes,
         ));
         let depth = parts.stack.len();
-        for (index, caller) in parts.stack.iter().rev().take(max_frames.saturating_sub(1)).enumerate() {
+        for (index, caller) in parts
+            .stack
+            .iter()
+            .rev()
+            .take(max_frames.saturating_sub(1))
+            .enumerate()
+        {
             frames.push(frame_view(
                 driver,
                 execution_id,
@@ -1719,7 +1803,9 @@ impl<'a> LiveExecution<'a> {
         if token != self.current_token {
             // Distinguish stale (well-formed, older sequence) from bad.
             if let Some(sequence) = parse_token_sequence(token) {
-                if sequence < self.stop_sequence && token_stem(token) == token_stem(&self.current_token) {
+                if sequence < self.stop_sequence
+                    && token_stem(token) == token_stem(&self.current_token)
+                {
                     return Err(DebugError::StaleToken {
                         expected_sequence: self.stop_sequence,
                     });
@@ -1869,9 +1955,12 @@ impl<'a> LiveExecution<'a> {
             effects_digest,
             observation: Some(stream.clone()),
         };
-        FinishRecord { outcome, record, stream }
+        FinishRecord {
+            outcome,
+            record,
+            stream,
+        }
     }
-
 }
 
 fn validate_stop_target(target: &StopTarget) -> Result<(), DebugError> {
@@ -1893,7 +1982,10 @@ fn validate_stop_target(target: &StopTarget) -> Result<(), DebugError> {
                 detail: "effect boundary phase must be before, after, or both".to_owned(),
             })
         }
-        StopTarget::Operation { .. } | StopTarget::Function { .. } | StopTarget::EffectBoundary { .. } | StopTarget::FailureOrTrap => Ok(()),
+        StopTarget::Operation { .. }
+        | StopTarget::Function { .. }
+        | StopTarget::EffectBoundary { .. }
+        | StopTarget::FailureOrTrap => Ok(()),
     }
 }
 
@@ -2026,11 +2118,7 @@ fn frame_view(
         });
     }
     FrameView {
-        frame: format!(
-            "mncs:vm:frame:{}:{}",
-            short_digest(execution_id),
-            frame.seq
-        ),
+        frame: format!("mncs:vm:frame:{}:{}", short_digest(execution_id), frame.seq),
         function: function_id,
         function_semantic,
         depth: depth as u64,
@@ -2080,7 +2168,12 @@ fn mint_value_id(execution_id: &str, frame_seq: u64, binding: &str, version: u64
         frame: u64,
         version: u64,
     }
-    let material = ValueMaterial { binding, execution: execution_id, frame: frame_seq, version };
+    let material = ValueMaterial {
+        binding,
+        execution: execution_id,
+        frame: frame_seq,
+        version,
+    };
     let bytes = serde_json::to_vec(&material).expect("value identity serializes");
     SemanticId(format!("mncs:vm:value:{}", full_digest_hex(&bytes)))
 }
@@ -2113,7 +2206,12 @@ fn token_stem(token: &str) -> &str {
     // `dbg:<exec12>:<seq>:<nonce>`; the stem binds the execution.
     let mut parts = token.splitn(2, ':');
     let _ = parts.next();
-    parts.next().unwrap_or_default().split(':').next().unwrap_or_default()
+    parts
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default()
 }
 
 fn parse_token_sequence(token: &str) -> Option<u64> {
@@ -2125,10 +2223,15 @@ fn parse_token_sequence(token: &str) -> Option<u64> {
 
 /// Names of [`StopTarget`] variants for capability reporting.
 pub fn stop_target_names() -> Vec<String> {
-    ["operation", "function", "effect_boundary", "failure_or_trap"]
-        .iter()
-        .map(|name| (*name).to_owned())
-        .collect()
+    [
+        "operation",
+        "function",
+        "effect_boundary",
+        "failure_or_trap",
+    ]
+    .iter()
+    .map(|name| (*name).to_owned())
+    .collect()
 }
 
 /// Event kinds the VM emits (shared `mncs.execution-observation/1` vocabulary).

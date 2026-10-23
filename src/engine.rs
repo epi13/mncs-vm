@@ -365,8 +365,7 @@ impl<'a> Engine<'a> {
             let skip_entry = prefetched || resumed_mid_block;
             resumed_mid_block = false;
             if !skip_entry {
-                if let Err(outcome) =
-                    self.enter_block(&mut parts.frame, function_index, &block_id)
+                if let Err(outcome) = self.enter_block(&mut parts.frame, function_index, &block_id)
                 {
                     return self.terminal(parts, dbg, outcome);
                 }
@@ -467,8 +466,7 @@ impl<'a> Engine<'a> {
                                             first.kind,
                                             mncs_model::SsaInstructionKind::HostCall { .. }
                                         ) {
-                                            entry_reasons
-                                                .extend(driver.effect_before_reasons());
+                                            entry_reasons.extend(driver.effect_before_reasons());
                                         }
                                     }
                                 }
@@ -504,7 +502,8 @@ impl<'a> Engine<'a> {
                                         }),
                                     );
                                     driver.set_block_prefetched();
-                                    let kinds = DebugDriver::suspend_kinds("operation", &entry_reasons);
+                                    let kinds =
+                                        DebugDriver::suspend_kinds("operation", &entry_reasons);
                                     let safe_point = driver.operation_safe_point(
                                         callee_seq,
                                         new_depth,
@@ -1543,6 +1542,8 @@ impl<'a> Engine<'a> {
                     operation: operation.clone(),
                     inputs,
                 };
+                let input_types =
+                    instruction_input_types(&self.module.functions[frame.function], instruction);
                 if let Some(driver) = dbg.as_deref_mut() {
                     let reasons = driver.before_effect(
                         frame.seq,
@@ -1556,10 +1557,30 @@ impl<'a> Engine<'a> {
                         return Step::Suspend(SuspendKind::EffectBefore(reasons));
                     }
                 }
-                match self.caps.dispatch(&request) {
+                match self.caps.dispatch_typed(&request, &input_types) {
                     Ok(response) => {
                         let provider = response.provider.clone();
                         let outputs = response.outputs.clone();
+                        if operation == "structured_digest" {
+                            let digest_type = BodyType::Sequence {
+                                element: Box::new(BodyType::Byte),
+                                bound: mncs_model::SequenceBound::Exact(32),
+                            };
+                            if instruction.outputs.len() != 1
+                                || instruction.outputs[0].ty != digest_type
+                                || !matches!(
+                                    outputs.as_slice(),
+                                    [Value::Sequence { elements }]
+                                        if elements.len() == 32
+                                            && elements.iter().all(|value| matches!(value, Value::Byte(_)))
+                                )
+                            {
+                                return Step::Halt(Outcome::ProviderFailure {
+                                    provider,
+                                    detail: "structured_digest provider returned an invalid typed digest".to_owned(),
+                                });
+                            }
+                        }
                         self.observe_effect(
                             state,
                             request,
@@ -1662,6 +1683,32 @@ fn halt_program(detail: impl Into<String>) -> Step {
 /// Coarse input-type check: kind and, for nominal aggregates, the
 /// declared identity. `Named` and `GenericParam` spellings never
 /// match: admission only resolves what the compiler resolved.
+fn instruction_input_types(
+    function: &mncs_model::SsaFunction,
+    instruction: &SsaInstruction,
+) -> Vec<BodyType> {
+    instruction
+        .inputs
+        .iter()
+        .filter_map(|identity| {
+            function
+                .inputs
+                .iter()
+                .chain(function.outputs.iter())
+                .chain(function.blocks.iter().flat_map(|block| {
+                    block.parameters.iter().chain(
+                        block
+                            .instructions
+                            .iter()
+                            .flat_map(|item| item.outputs.iter()),
+                    )
+                }))
+                .find(|value| value.identity == *identity)
+                .map(|value| value.ty.clone())
+        })
+        .collect()
+}
+
 fn value_matches_input(ty: &BodyType, value: &Value) -> bool {
     match (ty, value) {
         (BodyType::Bool, Value::Boolean(_)) => true,

@@ -114,9 +114,12 @@ fn compare(
         "source::{function}: vm={outcome:?} oracle={:?}",
         oracle.status
     );
-    assert_eq!(outcome, Outcome::Completed, "source::{function}: {outcome:?}");
-    let vm_values: Vec<mncs_model::ExecutionValue> =
-        record.returned.iter().map(to_wire).collect();
+    assert_eq!(
+        outcome,
+        Outcome::Completed,
+        "source::{function}: {outcome:?}"
+    );
+    let vm_values: Vec<mncs_model::ExecutionValue> = record.returned.iter().map(to_wire).collect();
     assert_eq!(
         vm_values, oracle.returned,
         "source::{function}: value divergence"

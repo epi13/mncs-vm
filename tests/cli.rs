@@ -72,7 +72,11 @@ fn run_executes_oneshot() {
         .output()
         .expect("spawn mncs-vm run");
     let _ = std::fs::remove_file(&args_path);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(document["outcome"]["kind"], "completed");
     assert_eq!(document["record"]["returned"][0]["Integer"]["value"], 7);
@@ -172,8 +176,7 @@ fn run_with_type_args_executes_generic() {
 #[test]
 fn batch_executes_many_calls_with_summary() {
     let stamp = std::process::id();
-    let artifact_path =
-        std::env::temp_dir().join(format!("mncs-vm-cli-batch-{stamp}.json"));
+    let artifact_path = std::env::temp_dir().join(format!("mncs-vm-cli-batch-{stamp}.json"));
     let compile = Command::new(bin())
         .args([
             "compile",
@@ -188,10 +191,8 @@ fn batch_executes_many_calls_with_summary() {
         "{}",
         String::from_utf8_lossy(&compile.stderr)
     );
-    let calls_path =
-        std::env::temp_dir().join(format!("mncs-vm-cli-batch-calls-{stamp}.json"));
-    let output_path =
-        std::env::temp_dir().join(format!("mncs-vm-cli-batch-out-{stamp}.json"));
+    let calls_path = std::env::temp_dir().join(format!("mncs-vm-cli-batch-calls-{stamp}.json"));
+    let output_path = std::env::temp_dir().join(format!("mncs-vm-cli-batch-out-{stamp}.json"));
     std::fs::write(
         &calls_path,
         serde_json::to_string(&serde_json::json!([
@@ -242,7 +243,8 @@ fn batch_executes_many_calls_with_summary() {
 
 #[test]
 fn run_with_observe_retains_stream() {
-    let policy_path = std::env::temp_dir().join(format!("mncs-vm-cli-policy-{}.json", std::process::id()));
+    let policy_path =
+        std::env::temp_dir().join(format!("mncs-vm-cli-policy-{}.json", std::process::id()));
     std::fs::write(
         &policy_path,
         serde_json::to_string(&serde_json::json!({
@@ -281,12 +283,19 @@ fn run_with_observe_retains_stream() {
         .expect("spawn mncs-vm run");
     let _ = std::fs::remove_file(&args_path);
     let _ = std::fs::remove_file(&policy_path);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(document["outcome"]["kind"], "completed");
     assert_eq!(document["record"]["returned"][0]["Integer"]["value"], 13);
     let observation = &document["record"]["observation"];
-    assert_eq!(observation["schema_version"], "mncs.execution-observation/1");
+    assert_eq!(
+        observation["schema_version"],
+        "mncs.execution-observation/1"
+    );
     assert!(!observation["events"].as_array().unwrap().is_empty());
 }
 
@@ -356,7 +365,10 @@ fn stdio_debug_session_stops_inspects_resumes() {
     );
     assert_eq!(response["ok"], true, "{response}");
     assert_eq!(response["result"]["event"], "stopped");
-    let token = response["result"]["stop"]["continuation_token"].as_str().unwrap().to_owned();
+    let token = response["result"]["stop"]["continuation_token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert_eq!(response["result"]["stop"]["safe_point"]["depth"], 0);
 
     let response = roundtrip(
@@ -367,8 +379,20 @@ fn stdio_debug_session_stops_inspects_resumes() {
         serde_json::json!({"token": token, "view": "stack", "max_frames": 4, "max_values": 8, "max_value_bytes": 1024}),
     );
     assert_eq!(response["ok"], true, "{response}");
-    assert_eq!(response["result"]["stack"]["frames"].as_array().unwrap().len(), 1);
-    assert!(response["result"]["stack"]["frames"][0]["values"].as_array().unwrap().len() >= 2);
+    assert_eq!(
+        response["result"]["stack"]["frames"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        response["result"]["stack"]["frames"][0]["values"]
+            .as_array()
+            .unwrap()
+            .len()
+            >= 2
+    );
 
     // A stale token is refused without disturbing the live stop.
     let response = roundtrip(
@@ -391,7 +415,10 @@ fn stdio_debug_session_stops_inspects_resumes() {
     assert_eq!(response["ok"], true, "{response}");
     assert_eq!(response["result"]["event"], "finished");
     assert_eq!(response["result"]["outcome"]["kind"], "completed");
-    assert_eq!(response["result"]["record"]["returned"][0]["Integer"]["value"], 7);
+    assert_eq!(
+        response["result"]["record"]["returned"][0]["Integer"]["value"],
+        7
+    );
 
     let _ = roundtrip(&mut stdin, &mut lines, 6, "close", serde_json::json!({}));
     let status = child.wait().expect("driver exit");
@@ -426,19 +453,20 @@ fn socket_daemon_reconnects_to_live_execution() {
         }
     }
     let stream = stream.expect("daemon socket accepts");
-    let communicate = |stream: &UnixStream, requests: Vec<serde_json::Value>| -> Vec<serde_json::Value> {
-        let mut writer = stream.try_clone().expect("clone socket");
-        let reader = BufReader::new(stream.try_clone().expect("clone socket"));
-        let mut responses = Vec::new();
-        let mut lines = reader.lines();
-        for request in requests {
-            writeln!(writer, "{request}").expect("write request");
-            writer.flush().ok();
-            let line = lines.next().expect("response line").expect("read response");
-            responses.push(serde_json::from_str(&line).expect("response JSON"));
-        }
-        responses
-    };
+    let communicate =
+        |stream: &UnixStream, requests: Vec<serde_json::Value>| -> Vec<serde_json::Value> {
+            let mut writer = stream.try_clone().expect("clone socket");
+            let reader = BufReader::new(stream.try_clone().expect("clone socket"));
+            let mut responses = Vec::new();
+            let mut lines = reader.lines();
+            for request in requests {
+                writeln!(writer, "{request}").expect("write request");
+                writer.flush().ok();
+                let line = lines.next().expect("response line").expect("read response");
+                responses.push(serde_json::from_str(&line).expect("response JSON"));
+            }
+            responses
+        };
 
     // First connection: start with a function-entry stop, then drop it.
     let add1 = function_identity("arith.mncs", "add1");
@@ -470,7 +498,10 @@ fn socket_daemon_reconnects_to_live_execution() {
     );
     assert_eq!(responses[0]["ok"], true, "{}", responses[0]);
     assert_eq!(responses[0]["result"]["event"], "stopped");
-    let token = responses[0]["result"]["stop"]["continuation_token"].as_str().unwrap().to_owned();
+    let token = responses[0]["result"]["stop"]["continuation_token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert_eq!(responses[0]["result"]["stop"]["safe_point"]["depth"], 1);
     drop(stream);
 
@@ -483,7 +514,13 @@ fn socket_daemon_reconnects_to_live_execution() {
         ],
     );
     assert_eq!(responses[0]["ok"], true, "{}", responses[0]);
-    assert_eq!(responses[0]["result"]["stack"]["frames"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        responses[0]["result"]["stack"]["frames"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 
     let responses = communicate(
         &stream,
@@ -491,7 +528,10 @@ fn socket_daemon_reconnects_to_live_execution() {
     );
     assert_eq!(responses[0]["ok"], true, "{}", responses[0]);
     assert_eq!(responses[0]["result"]["event"], "stopped");
-    let token = responses[0]["result"]["stop"]["continuation_token"].as_str().unwrap().to_owned();
+    let token = responses[0]["result"]["stop"]["continuation_token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
     let responses = communicate(
         &stream,
@@ -501,7 +541,10 @@ fn socket_daemon_reconnects_to_live_execution() {
     // The entry stop re-fires on the next add1 call or the run
     // finishes; either is the same live execution continuing.
     if responses[0]["result"]["event"] == "stopped" {
-        let token = responses[0]["result"]["stop"]["continuation_token"].as_str().unwrap().to_owned();
+        let token = responses[0]["result"]["stop"]["continuation_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         let responses = communicate(
             &stream,
             vec![
@@ -514,9 +557,15 @@ fn socket_daemon_reconnects_to_live_execution() {
             vec![serde_json::json!({"id": 6, "op": "resume", "params": {"token": token}})],
         );
         assert_eq!(responses[0]["result"]["event"], "finished");
-        assert_eq!(responses[0]["result"]["record"]["returned"][0]["Integer"]["value"], 13);
+        assert_eq!(
+            responses[0]["result"]["record"]["returned"][0]["Integer"]["value"],
+            13
+        );
     } else {
-        assert_eq!(responses[0]["result"]["record"]["returned"][0]["Integer"]["value"], 13);
+        assert_eq!(
+            responses[0]["result"]["record"]["returned"][0]["Integer"]["value"],
+            13
+        );
     }
 
     let _ = communicate(
@@ -542,7 +591,11 @@ fn compile_then_run_matches_direct_compile() {
         ])
         .output()
         .expect("spawn mncs-vm compile");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let compiled: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(compiled["artifact_id"]
         .as_str()
@@ -580,11 +633,22 @@ fn compile_then_run_matches_direct_compile() {
         .expect("spawn mncs-vm run --compile");
     let _ = std::fs::remove_file(&args_path);
     let _ = std::fs::remove_file(&artifact_path);
-    assert!(via_artifact.status.success(), "{}", String::from_utf8_lossy(&via_artifact.stderr));
-    assert!(via_compile.status.success(), "{}", String::from_utf8_lossy(&via_compile.stderr));
+    assert!(
+        via_artifact.status.success(),
+        "{}",
+        String::from_utf8_lossy(&via_artifact.stderr)
+    );
+    assert!(
+        via_compile.status.success(),
+        "{}",
+        String::from_utf8_lossy(&via_compile.stderr)
+    );
     let from_artifact: serde_json::Value = serde_json::from_slice(&via_artifact.stdout).unwrap();
     let from_compile: serde_json::Value = serde_json::from_slice(&via_compile.stdout).unwrap();
-    assert_eq!(from_artifact, from_compile, "artifact reuse is byte-identical");
+    assert_eq!(
+        from_artifact, from_compile,
+        "artifact reuse is byte-identical"
+    );
 }
 
 #[test]
@@ -592,29 +656,71 @@ fn retained_session_refuses_bad_frames_and_resets_each_call_budget() {
     let admitted = mncs_vm::harness::tests_only::compile_corpus("arith.mncs");
     let path = std::env::temp_dir().join(format!("mncs-vm-session-{}.json", std::process::id()));
     std::fs::write(&path, serde_json::to_vec(&admitted.artifact).unwrap()).unwrap();
-    let mut child = Command::new(bin()).args(["serve", "--artifact", path.to_str().unwrap()])
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut child = Command::new(bin())
+        .args(["serve", "--artifact", path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
-    let mut read = || { let mut line = String::new(); output.read_line(&mut line).unwrap(); serde_json::from_str::<serde_json::Value>(&line).unwrap() };
+    let mut read = || {
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        serde_json::from_str::<serde_json::Value>(&line).unwrap()
+    };
     assert_eq!(read()["status"], "ready");
     let request = serde_json::json!({"schema_version":"0.1", "target":{"module":"mncs.vmcorpus.arith.v1","function":"add3"}, "arguments":[int_arg(10)],"step_budget":100});
     let mut send = |id: u64, body: serde_json::Value| {
-        writeln!(input, "{}", body).unwrap(); input.flush().unwrap(); let response = read();
-        assert_eq!(response["id"],id); response
+        writeln!(input, "{}", body).unwrap();
+        input.flush().unwrap();
+        let response = read();
+        assert_eq!(response["id"], id);
+        response
     };
-    let bad = send(0, serde_json::json!({"schema_version":"wrong","id":0,"request":request}));
-    assert_eq!(bad["ok"],false);
-    let forged=send(1,serde_json::json!({"schema_version":"mncs.vm.session/1","id":1,"request":request,"callable_reference":{"artifact_identity":"forged","callable_identity":"forged","declaration_identity":"forged","test_case_identity":"forged","signature_identity":"forged"}}));
-    assert_eq!(forged["ok"],false);
-    let frame=|id,req|serde_json::json!({"schema_version":"mncs.vm.session/1","id":id,"request":req});
-    let mut low=request.clone();low["step_budget"]=serde_json::json!(1);
-    let exhausted=send(2,frame(2,low.clone()));assert_eq!(exhausted["result"]["outcome"]["kind"],"budget_exhausted");
-    let exhausted_again=send(3,frame(3,low));assert_eq!(exhausted["result"]["record"]["usage"],exhausted_again["result"]["record"]["usage"]);
-    let first=send(4,frame(4,request.clone()));let second=send(5,frame(5,request));
-    assert_eq!(first["result"]["outcome"]["kind"],"completed");
-    assert_eq!(first["result"]["execution"]["returned"][0]["integer"]["value"],13);
-    assert_eq!(first["result"]["record"]["usage"],second["result"]["record"]["usage"]);
-    assert_eq!(first["result"]["record"]["resource_limits"].as_array().unwrap().iter().find(|r|r["dimension"]=="steps").unwrap()["limit"],100);
-    drop(send);drop(input);assert!(child.wait().unwrap().success());std::fs::remove_file(path).unwrap();
+    let bad = send(
+        0,
+        serde_json::json!({"schema_version":"wrong","id":0,"request":request}),
+    );
+    assert_eq!(bad["ok"], false);
+    let forged = send(
+        1,
+        serde_json::json!({"schema_version":"mncs.vm.session/1","id":1,"request":request,"callable_reference":{"artifact_identity":"forged","callable_identity":"forged","declaration_identity":"forged","test_case_identity":"forged","signature_identity":"forged"}}),
+    );
+    assert_eq!(forged["ok"], false);
+    let frame =
+        |id, req| serde_json::json!({"schema_version":"mncs.vm.session/1","id":id,"request":req});
+    let mut low = request.clone();
+    low["step_budget"] = serde_json::json!(1);
+    let exhausted = send(2, frame(2, low.clone()));
+    assert_eq!(exhausted["result"]["outcome"]["kind"], "budget_exhausted");
+    let exhausted_again = send(3, frame(3, low));
+    assert_eq!(
+        exhausted["result"]["record"]["usage"],
+        exhausted_again["result"]["record"]["usage"]
+    );
+    let first = send(4, frame(4, request.clone()));
+    let second = send(5, frame(5, request));
+    assert_eq!(first["result"]["outcome"]["kind"], "completed");
+    assert_eq!(
+        first["result"]["execution"]["returned"][0]["integer"]["value"],
+        13
+    );
+    assert_eq!(
+        first["result"]["record"]["usage"],
+        second["result"]["record"]["usage"]
+    );
+    assert_eq!(
+        first["result"]["record"]["resource_limits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["dimension"] == "steps")
+            .unwrap()["limit"],
+        100
+    );
+    drop(send);
+    drop(input);
+    assert!(child.wait().unwrap().success());
+    std::fs::remove_file(path).unwrap();
 }

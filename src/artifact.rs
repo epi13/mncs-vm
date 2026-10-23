@@ -12,7 +12,7 @@ pub const ARTIFACT_SCHEMA_VERSION: &str = "mncs.vm.artifact/1";
 /// VM contract revision this artifact was built for.
 pub const VM_CONTRACT: &str = "mncs.vm/0.1";
 /// SSA schema versions the v1 reference engine accepts in code sections.
-pub const ACCEPTED_SSA_SCHEMAS: &[&str] = &["0.5"];
+pub const ACCEPTED_SSA_SCHEMAS: &[&str] = &["0.5", "0.6"];
 
 /// Where this artifact came from. Provenance, not authority: the VM
 /// re-validates everything it enforces.

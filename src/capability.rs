@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 
+use mncs_model::BodyType;
 use serde::{Deserialize, Serialize};
 
 use crate::outcome::Outcome;
@@ -38,6 +39,17 @@ pub struct EffectResponse {
 pub trait Provider: Send + Sync {
     fn identity(&self) -> &str;
     fn invoke(&self, request: &EffectRequest) -> Result<EffectResponse, Outcome>;
+
+    /// Optional Language-resolved operand types for operations whose
+    /// semantics depend on the verified SSA type. Existing providers keep
+    /// their original boundary unless they opt in.
+    fn invoke_typed(
+        &self,
+        request: &EffectRequest,
+        _input_types: &[BodyType],
+    ) -> Result<EffectResponse, Outcome> {
+        self.invoke(request)
+    }
 }
 
 /// The admitted authority for one execution.
@@ -70,14 +82,27 @@ impl CapabilityEnv {
     /// Mediate one effect. Fails closed on missing authority; provider
     /// failures stay distinct from denials.
     pub fn dispatch(&self, request: &EffectRequest) -> Result<EffectResponse, Outcome> {
+        self.dispatch_typed(request, &[])
+    }
+
+    /// Mediate one effect while retaining the source types resolved from
+    /// the admitted SSA instruction. Authority checks and failure mapping
+    /// are identical to [`Self::dispatch`].
+    pub fn dispatch_typed(
+        &self,
+        request: &EffectRequest,
+        input_types: &[BodyType],
+    ) -> Result<EffectResponse, Outcome> {
         match self.bindings.get(&request.capability) {
-            Some(provider) => provider.invoke(request).map_err(|outcome| match outcome {
-                Outcome::ProviderFailure { .. } | Outcome::Unsupported { .. } => outcome,
-                other => Outcome::ProviderFailure {
-                    provider: provider.identity().to_owned(),
-                    detail: format!("provider exited abnormally: {}", other.tag()),
-                },
-            }),
+            Some(provider) => provider
+                .invoke_typed(request, input_types)
+                .map_err(|outcome| match outcome {
+                    Outcome::ProviderFailure { .. } | Outcome::Unsupported { .. } => outcome,
+                    other => Outcome::ProviderFailure {
+                        provider: provider.identity().to_owned(),
+                        detail: format!("provider exited abnormally: {}", other.tag()),
+                    },
+                }),
             None => Err(Outcome::CapabilityDenied {
                 capability: request.capability.clone(),
                 operation: request.operation.clone(),
