@@ -1,0 +1,31 @@
+{
+  "schema_version": "mncs.vm.readiness-evidence/1",
+  "date": "2026-11-02",
+  "correction": "Validate exact declared input closure; preserve Git observations separately.",
+  "canonical_build": {
+    "status": "matches-embedded-inputs",
+    "mismatches": [],
+    "executable_sha256": "99c3cbe5f5a5694d4222a6be269f293d4eddf344a32f7f003c20307a13a51dfc",
+    "source_revisions": {
+      "mncs-compiler": "98845d1fd10e9612a961cbb4314db50588f84353",
+      "mncs-language": "56d62c5562b1af3cb9170c3fe88cb4abae145989",
+      "mncs-vm": "bd05870a9389825e58f58607ef7e2f754cf381f5"
+    },
+    "current_source_revisions": {
+      "mncs-compiler": "98845d1fd10e9612a961cbb4314db50588f84353",
+      "mncs-language": "56d62c5562b1af3cb9170c3fe88cb4abae145989",
+      "mncs-vm": "bd05870a9389825e58f58607ef7e2f754cf381f5"
+    }
+  },
+  "regression": {
+    "tests": 5,
+    "passed": 5,
+    "negative_cases": [
+      "changed compiled input",
+      "added input file",
+      "previously absent Cargo config"
+    ],
+    "legacy_receipts": "conservative revision validation retained"
+  },
+  "continuation": "This evidence commit is outside the compiled input closure. Reinspect the unchanged binary through mncs-vm:vm-runtime after publication."
+}
