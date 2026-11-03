@@ -115,6 +115,9 @@ fn main() {
     ];
     let mut files = BTreeSet::new();
     for input in &inputs {
+        // Observe directories and absent selectors as well as existing files:
+        // additions must regenerate the same complete closure we validate.
+        println!("cargo:rerun-if-changed={}", input.display());
         if input.exists() {
             collect(&input, &mut files);
         }
