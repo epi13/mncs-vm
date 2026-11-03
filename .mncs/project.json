@@ -145,11 +145,7 @@
           "fixed_argv": [
             "build"
           ],
-          "toolchain": {
-            "repository": "mncs-vm",
-            "path": "target/debug/mncs-vm"
-          },
-          "toolchain_env": "MNCS_VM_BIN"
+          "timeout_seconds": 900
         }
       }
     ],

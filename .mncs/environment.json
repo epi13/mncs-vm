@@ -1,0 +1,22 @@
+{
+  "name": "mncs-vm-local-development",
+  "working_checkout": "current",
+  "workspace_scope": {
+    "kind": "workspace",
+    "repositories": [
+      "mncs-vm"
+    ]
+  },
+  "intent": {
+    "goal": "Develop and verify the canonical MNCS VM and its build provenance.",
+    "repositories": [
+      "mncs-vm"
+    ],
+    "protected_repositories": [],
+    "constraints": [
+      "Keep implementation changes within the selected development repository.",
+      "Treat declared sibling toolchains and their source as read-only inputs.",
+      "Preserve foreign claims and dirty work; use registered isolated checkouts."
+    ]
+  }
+}
