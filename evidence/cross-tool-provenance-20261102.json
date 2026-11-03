@@ -27,5 +27,23 @@
     ],
     "legacy_receipts": "conservative revision validation retained"
   },
-  "continuation": "This evidence commit is outside the compiled input closure. Reinspect the unchanged binary through mncs-vm:vm-runtime after publication."
+  "continuation": "This evidence commit is outside the compiled input closure. Reinspect the unchanged binary through mncs-vm:vm-runtime after publication.",
+  "post_publication_inspection": {
+    "route": "mncs-vm:vm-runtime through Environment",
+    "status": "matches-embedded-inputs",
+    "mismatches": [],
+    "recorded_vm_revision": "bd05870a9389825e58f58607ef7e2f754cf381f5",
+    "observed_vm_revision": "f6051f09fad987db2d2bb601e5dcac375784d53e",
+    "unchanged_executable_sha256": "99c3cbe5f5a5694d4222a6be269f293d4eddf344a32f7f003c20307a13a51dfc"
+  },
+  "final_directory_invalidation_build": {
+    "status": "matches-embedded-inputs",
+    "mismatches": [],
+    "executable_sha256": "d584c5d8cf0ea4a8c7376e15afbc20f76c8f3fe235517c92f7d01d2b649592c2",
+    "source_revisions": {
+      "mncs-compiler": "98845d1fd10e9612a961cbb4314db50588f84353",
+      "mncs-language": "8192930bd23ebbaaff8a45504838e5f17f032b6d",
+      "mncs-vm": "1c47ee143e2d670ed6e17c99f49bacc5e5ff324d"
+    }
+  }
 }
