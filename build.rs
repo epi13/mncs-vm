@@ -114,7 +114,7 @@ fn main() {
         compiler_root.join("tools/vm-artifact-codec/Cargo.toml"),
     ];
     let mut files = BTreeSet::new();
-    for input in inputs {
+    for input in &inputs {
         if input.exists() {
             collect(&input, &mut files);
         }
@@ -233,6 +233,7 @@ fn main() {
         "dirty_input_count": dirty_inputs.len(),
         "source_inputs": source_inputs,
         "source_inputs_identity": inputs_identity,
+        "source_input_roots": inputs.iter().map(|path| path.display().to_string()).collect::<Vec<_>>(),
         "dependency_closure": closure,
         "build_configuration": build_configuration,
         "assurance": "local build observation; not independent attestation",

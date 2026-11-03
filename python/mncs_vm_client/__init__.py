@@ -49,6 +49,28 @@ def validate_toolchain_executables(configuration):
     return mismatches
 
 
+def current_input_paths(selectors, roots):
+    """Recompute the build owner's declared file set, including new inputs."""
+    if not isinstance(selectors, list) or not selectors or not all(isinstance(x, str) for x in selectors):
+        raise ValueError('invalid source input roots')
+    files, visited = set(), set()
+    def collect(path):
+        resolved = path.resolve()
+        if not any(resolved.is_relative_to(root) for root in roots):
+            raise ValueError('input outside selected closure')
+        if path.is_dir():
+            if path.name in {'target', '.git', '.worktrees', '.mncs'} or resolved in visited:
+                return
+            visited.add(resolved)
+            for child in path.iterdir():
+                collect(child)
+        elif path.is_file():
+            files.add(str(path.resolve(strict=True)))
+    for selector in selectors:
+        collect(Path(selector))
+    return files
+
+
 def inspect_runtime(executable: Path):
     executable = Path(executable).resolve()
     result = subprocess.run([str(executable), 'describe'], capture_output=True, text=True, timeout=10, check=True)
@@ -64,6 +86,8 @@ def inspect_runtime(executable: Path):
         inputs = receipt.get('source_inputs')
         closures = receipt.get('dependency_closure')
         mismatches = []
+        current_revisions = {}
+        current_dirty_inputs = {}
         if (receipt.get('schema_version') != 'mncs.vm-build-receipt/1'
                 or embedded.get('identity') != 'sha256:' + digest(receipt)
                 or not isinstance(inputs, dict) or not isinstance(closures, list)):
@@ -77,7 +101,8 @@ def inspect_runtime(executable: Path):
                 root = Path(closure['checkout']).resolve()
                 try:
                     revision = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=5, check=True).stdout.strip()
-                    if revision != closure.get('revision'):
+                    current_revisions[name] = revision
+                    if 'source_input_roots' not in receipt and revision != closure.get('revision'):
                         mismatches.append('source-revision:' + str(name))
                 except (OSError, subprocess.SubprocessError):
                     mismatches.append('source-revision-unavailable:' + str(name))
@@ -93,8 +118,15 @@ def inspect_runtime(executable: Path):
                     path = Path(raw_path).resolve()
                     if path.is_relative_to(root) and path.relative_to(root).as_posix() in changed:
                         dirty_inputs[str(path)] = expected
-            if digest(dirty_inputs) != receipt.get('dirty_content_identity') or len(dirty_inputs) != receipt.get('dirty_input_count'):
+            current_dirty_inputs = dirty_inputs
+            if 'source_input_roots' not in receipt and (digest(dirty_inputs) != receipt.get('dirty_content_identity') or len(dirty_inputs) != receipt.get('dirty_input_count')):
                 mismatches.append('dirty-checkout-identity')
+            if 'source_input_roots' in receipt:
+                try:
+                    if current_input_paths(receipt['source_input_roots'], roots) != set(inputs):
+                        mismatches.append('source-input-set')
+                except (OSError, ValueError):
+                    mismatches.append('source-input-roots')
             for raw_path, expected in inputs.items():
                 try:
                     path = Path(raw_path).resolve(strict=True)
@@ -114,6 +146,9 @@ def inspect_runtime(executable: Path):
             'receipt_schema': receipt.get('schema_version'),
             'receipt_identity': receipt_identity,
             'source_revisions': receipt.get('source_revisions', {}),
+            'current_source_revisions': current_revisions,
+            'current_dirty_content_identity': digest(current_dirty_inputs),
+            'current_dirty_input_count': len(current_dirty_inputs),
             'dirty_content_identity': receipt.get('dirty_content_identity'),
             'dirty_input_count': receipt.get('dirty_input_count'),
             'source_inputs_identity': receipt.get('source_inputs_identity'),
