@@ -18,8 +18,8 @@ pub enum Value {
     },
     Boolean(bool),
     Byte(u8),
-    /// IEEE-754 binary64 bits. Carried, never computed: float
-    /// arithmetic is an explicit engine UNSUPPORTED.
+    /// IEEE-754 binary64 bits. Language-owned scalar kernels define
+    /// arithmetic and conversion semantics over this representation.
     FloatBits(u64),
     Finite {
         type_id: String,

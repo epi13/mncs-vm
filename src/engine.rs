@@ -3,7 +3,7 @@
 //! A small, boring, inspectable interpreter over admitted SSA code.
 //! The engine owns runtime mechanics — frames, control, metering,
 //! capability dispatch, outcomes — while language-owned meaning
-//! (integer evaluation, type shapes) is consumed through public
+//! (scalar operations, conversions, type shapes) is consumed through public
 //! upstream contracts, never redefined.
 //!
 //! Accounting is VM-defined and stated exactly: one step per
@@ -12,15 +12,16 @@
 //! comparable across engines.
 //!
 //! Supported subset (everything else is explicit `Unsupported`):
-//! Constant, Integer, IntegerCompare, BooleanOp, BooleanCompare,
+//! Constant, Integer, IntegerCompare, FloatConstant, Float, FloatCompare,
+//! BooleanOp, BooleanCompare,
 //! BooleanNot, ByteBitwise, ByteShift, ByteCompare, Select (scalar),
 //! RecordConstruct, RecordProject, FiniteConstruct,
 //! FinitePayloadProject, FiniteIsVariant, SequenceConstruct,
 //! SequenceProject, SequenceLength, SequenceReplace, ViewConstruct,
-//! BoundCheck, Convert (integer/boolean/byte totals), Call, Effect
+//! BoundCheck, Convert (integer/boolean/byte/float scalar edges), Call, Effect
 //! (recorded), HostCall (provider-dispatched), Return, Branch,
-//! ConditionalBranch, Failure. RuntimeCheck is Unsupported upstream
-//! as well, so agreement there is exact.
+//! ConditionalBranch, Failure. FloatIntrinsic and RuntimeCheck remain
+//! unsupported; RuntimeCheck is unsupported upstream as well.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -36,7 +37,7 @@ use crate::debug::{DebugDriver, DriveExit, StopReason, SuspendRequest};
 use crate::evidence::EffectObservation;
 use crate::outcome::Outcome;
 use crate::resource::{ResourceEnvelope, ResourceUsage};
-use crate::value::Value;
+use crate::value::{from_wire, to_wire, Value};
 
 /// How the caller names the entry callable.
 #[derive(Debug, Clone)]
@@ -916,6 +917,16 @@ impl<'a> Engine<'a> {
                 emit(frame, produced);
                 Step::Continue
             }
+            SsaInstructionKind::FloatConstant { bits, ty } => {
+                if !ty.is_supported() {
+                    return unsupported("float constant outside the binary64 subset".to_owned());
+                }
+                if !f64::from_bits(*bits).is_finite() {
+                    return halt_program("non-finite float constant");
+                }
+                emit(frame, Value::FloatBits(*bits));
+                Step::Continue
+            }
             SsaInstructionKind::Integer {
                 operator,
                 operand_type,
@@ -982,6 +993,46 @@ impl<'a> Engine<'a> {
                 }
                 let Some(value) = compare_integers(predicate, *left, *right) else {
                     return unsupported(format!("integer predicate {predicate:?}"));
+                };
+                emit(frame, Value::Boolean(value));
+                Step::Continue
+            }
+            SsaInstructionKind::Float { operator } => {
+                if !matches!(operator.as_str(), "add" | "sub" | "mul" | "div") {
+                    return unsupported(format!("float operator {operator:?}"));
+                }
+                let Some(pair) = need(2) else {
+                    return invalid("float operands were unavailable".to_owned());
+                };
+                let (Value::FloatBits(left), Value::FloatBits(right)) = (&pair[0], &pair[1]) else {
+                    return invalid("float operands were not binary64 values".to_owned());
+                };
+                let left = f64::from_bits(*left);
+                let right = f64::from_bits(*right);
+                let Some(value) = mncs_model::evaluate_float(operator, left, right) else {
+                    return halt_program(format!(
+                        "float {operator} trapped on a non-finite input or result"
+                    ));
+                };
+                emit(frame, Value::FloatBits(value.to_bits()));
+                Step::Continue
+            }
+            SsaInstructionKind::FloatCompare { predicate } => {
+                if !matches!(predicate.as_str(), "eq" | "ne" | "lt" | "le" | "gt" | "ge") {
+                    return unsupported(format!("float predicate {predicate:?}"));
+                }
+                let Some(pair) = need(2) else {
+                    return invalid("float comparison operands were unavailable".to_owned());
+                };
+                let (Value::FloatBits(left), Value::FloatBits(right)) = (&pair[0], &pair[1]) else {
+                    return invalid(
+                        "float comparison operands were not binary64 values".to_owned(),
+                    );
+                };
+                let left = f64::from_bits(*left);
+                let right = f64::from_bits(*right);
+                let Some(value) = mncs_model::compare_floats(predicate, left, right) else {
+                    return halt_program("float comparison trapped on a non-finite input");
                 };
                 emit(frame, Value::Boolean(value));
                 Step::Continue
@@ -1407,7 +1458,7 @@ impl<'a> Engine<'a> {
                     }
                     ConvertOut::Trapped => halt_program("conversion trapped on out-of-range input"),
                     ConvertOut::Unsupported => {
-                        unsupported("conversion outside the integer/boolean/byte subset".to_owned())
+                        unsupported("conversion outside the Language scalar contract".to_owned())
                     }
                 }
             }
@@ -1800,102 +1851,12 @@ enum ConvertOut {
     Unsupported,
 }
 
-/// Total scalar conversions over the integer/boolean/byte subset.
-/// Extension preserves value with a range check; truncation wraps
-/// into the target width; float involvement is Unsupported.
+/// Apply the Language-owned scalar conversion contract to one VM value.
 fn convert_scalar(operand: &Value, from: &BodyType, to: &BodyType) -> ConvertOut {
-    let as_int = |value: &Value| -> Option<(i128, IntegerType)> {
-        match value {
-            Value::Integer {
-                value,
-                bits,
-                signed,
-            } => Some((
-                *value,
-                IntegerType {
-                    bits: (*bits).min(126) as u16,
-                    signed: *signed,
-                },
-            )),
-            _ => None,
-        }
-    };
-    match (from, to) {
-        (BodyType::Integer(from_ty), BodyType::Integer(to_ty)) => {
-            let Some((value, _)) = as_int(operand) else {
-                return ConvertOut::Unsupported;
-            };
-            if !in_range(value, *from_ty) {
-                return ConvertOut::Unsupported;
-            }
-            match wrap_to_bits(value, to_ty.bits, to_ty.signed) {
-                Some(wrapped) => ConvertOut::Value(Value::Integer {
-                    value: wrapped,
-                    bits: u32::from(to_ty.bits),
-                    signed: to_ty.signed,
-                }),
-                None => ConvertOut::Unsupported,
-            }
-        }
-        (BodyType::Bool, BodyType::Integer(to_ty)) => {
-            let Value::Boolean(value) = operand else {
-                return ConvertOut::Unsupported;
-            };
-            ConvertOut::Value(Value::Integer {
-                value: i128::from(*value),
-                bits: u32::from(to_ty.bits),
-                signed: to_ty.signed,
-            })
-        }
-        (BodyType::Integer(_), BodyType::Bool) => {
-            let Some((value, _)) = as_int(operand) else {
-                return ConvertOut::Unsupported;
-            };
-            match value {
-                0 => ConvertOut::Value(Value::Boolean(false)),
-                1 => ConvertOut::Value(Value::Boolean(true)),
-                _ => ConvertOut::Trapped,
-            }
-        }
-        (BodyType::Byte, BodyType::Integer(to_ty)) => {
-            let Value::Byte(value) = operand else {
-                return ConvertOut::Unsupported;
-            };
-            ConvertOut::Value(Value::Integer {
-                value: i128::from(*value),
-                bits: u32::from(to_ty.bits),
-                signed: to_ty.signed,
-            })
-        }
-        (BodyType::Integer(_), BodyType::Byte) => {
-            let Some((value, _)) = as_int(operand) else {
-                return ConvertOut::Unsupported;
-            };
-            if (0..=255).contains(&value) {
-                ConvertOut::Value(Value::Byte(value as u8))
-            } else {
-                ConvertOut::Trapped
-            }
-        }
-        _ => ConvertOut::Unsupported,
-    }
-}
-
-fn wrap_to_bits(value: i128, bits: u16, signed: bool) -> Option<i128> {
-    if !(1..=126).contains(&bits) {
-        return None;
-    }
-    let modulus = 1_i128.checked_shl(u32::from(bits))?;
-    let truncated = value.rem_euclid(modulus);
-    if signed {
-        let sign = 1_i128.checked_shl(u32::from(bits - 1))?;
-        Some(if truncated >= sign {
-            truncated - modulus
-        } else {
-            truncated
-        })
-    } else {
-        Some(truncated)
+    match mncs_model::convert_scalar_value(&to_wire(operand), from, to) {
+        Ok(value) => ConvertOut::Value(from_wire(&value)),
+        Err(mncs_model::ExecutionStatus::RuntimeFailure) => ConvertOut::Trapped,
+        Err(_) => ConvertOut::Unsupported,
     }
 }
 

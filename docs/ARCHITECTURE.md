@@ -544,19 +544,21 @@ Resolved from the open questions above:
 - Cross-artifact calls and dynamic loading do not exist.
 - The upstream `Session` API stays upstream; the VM exposes its
   own smaller session over admitted artifacts.
-- Integer meaning is never redefined: the engine evaluates
-  through public `IntegerOperation::evaluate` and mirrors oracle
-  outcome mapping, pinned by differential tests.
+- Integer and binary64 meaning is never redefined: the engine uses
+  public Language kernels for integer operations, finite binary64
+  arithmetic/comparisons, and scalar conversion. Oracle outcome mapping
+  is pinned by differential tests.
 
 Executable subset and explicit UNSUPPORTED list: Constant,
-Integer, IntegerCompare, BooleanOp, BooleanCompare, BooleanNot,
+Integer, IntegerCompare, FloatConstant, finite binary64 Float and
+FloatCompare, BooleanOp, BooleanCompare, BooleanNot,
 ByteBitwise, ByteShift, ByteCompare, scalar Select,
 RecordConstruct, RecordProject, FiniteConstruct,
 FinitePayloadProject, FiniteIsVariant, SequenceConstruct,
 SequenceProject, SequenceLength, SequenceReplace, BoundCheck,
-integer/boolean/byte Convert, Call, Effect (recorded),
+integer/boolean/byte/binary64 scalar Convert, Call, Effect (recorded),
 HostCall (provider-dispatched), Return, Branch,
-ConditionalBranch, Failure. Everything else — floats ops,
+ConditionalBranch, Failure. Everything else — FloatIntrinsic,
 vectors, masks ops, views, SequenceCopy, RuntimeCheck (also
 Unsupported upstream) — is explicit `Unsupported`, never
 approximated.

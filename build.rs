@@ -1,5 +1,8 @@
 //! Embed a local build-input receipt in the VM executable. This records
 //! producer observations; it is not an independent build attestation.
+#[path = "build_support.rs"]
+mod build_support;
+
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -78,15 +81,30 @@ fn main() {
     let vm_root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir"))
         .canonicalize()
         .expect("canonical VM root");
-    let workspace = vm_root.parent().expect("workspace parent");
-    let language_root = workspace
-        .join("mncs-language")
-        .canonicalize()
-        .expect("selected language source");
-    let compiler_root = workspace
-        .join("mncs-compiler")
-        .canonicalize()
-        .expect("selected compiler source");
+    let model_crate = build_support::path_dependency(&vm_root, "mncs-model");
+    let language_root = model_crate
+        .parent()
+        .and_then(Path::parent)
+        .expect("mncs-model must be in a crates directory")
+        .to_path_buf();
+    for dependency in ["mncs-compiler", "mncs-syntax", "mncs-codegen"] {
+        let selected = build_support::path_dependency(&vm_root, dependency);
+        let expected = language_root
+            .join("crates")
+            .join(dependency)
+            .canonicalize()
+            .unwrap_or_else(|error| panic!("resolve Language dependency {dependency:?}: {error}"));
+        assert_eq!(
+            selected, expected,
+            "{dependency} must come from the same Language checkout as mncs-model"
+        );
+    }
+    let codec_crate = build_support::path_dependency(&vm_root, "mncs-vm-artifact-codec");
+    let compiler_root = codec_crate
+        .parent()
+        .and_then(Path::parent)
+        .expect("VM artifact codec must be under tools/")
+        .to_path_buf();
 
     let roots = [
         ("mncs-vm", vm_root.clone()),
@@ -99,6 +117,7 @@ fn main() {
         vm_root.join("Cargo.toml"),
         vm_root.join("Cargo.lock"),
         vm_root.join("build.rs"),
+        vm_root.join("build_support.rs"),
         vm_root.join(".cargo/config.toml"),
         language_root.join("Cargo.toml"),
         language_root.join("Cargo.lock"),
