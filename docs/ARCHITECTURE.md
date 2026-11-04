@@ -524,7 +524,8 @@ Resolved from the open questions above:
   engine checks arity plus coarse kind/identity at call and branch
   boundaries.
 - Memory is frames plus reference-counted immutable values with
-  cell accounting; no collector, no linear memory, no handles yet.
+  live-cell accounting for instruction outputs; no collector, no
+  linear memory, no handles yet.
 - Capabilities bind per call through an explicit environment;
   providers are foreign traits, never VM logic.
 - No execution-local concurrency exists: current programs need
@@ -555,11 +556,11 @@ FloatCompare, BooleanOp, BooleanCompare, BooleanNot,
 ByteBitwise, ByteShift, ByteCompare, scalar Select,
 RecordConstruct, RecordProject, FiniteConstruct,
 FinitePayloadProject, FiniteIsVariant, SequenceConstruct,
-SequenceProject, SequenceLength, SequenceReplace, BoundCheck,
+SequenceProject, SequenceLength, SequenceReplace, SequenceCopy, BoundCheck,
 integer/boolean/byte/binary64 scalar Convert, Call, Effect (recorded),
 HostCall (provider-dispatched), Return, Branch,
 ConditionalBranch, Failure. Everything else — FloatIntrinsic,
-vectors, masks ops, views, SequenceCopy, RuntimeCheck (also
+vectors, masks ops, views, RuntimeCheck (also
 Unsupported upstream) — is explicit `Unsupported`, never
 approximated.
 

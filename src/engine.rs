@@ -17,8 +17,8 @@
 //! BooleanNot, ByteBitwise, ByteShift, ByteCompare, Select (scalar),
 //! RecordConstruct, RecordProject, FiniteConstruct,
 //! FinitePayloadProject, FiniteIsVariant, SequenceConstruct,
-//! SequenceProject, SequenceLength, SequenceReplace, ViewConstruct,
-//! BoundCheck, Convert (integer/boolean/byte/float scalar edges), Call, Effect
+//! SequenceProject, SequenceLength, SequenceReplace, SequenceCopy,
+//! ViewConstruct, BoundCheck, Convert (integer/boolean/byte/float scalar edges), Call, Effect
 //! (recorded), HostCall (provider-dispatched), Return, Branch,
 //! ConditionalBranch, Failure. FloatIntrinsic and RuntimeCheck remain
 //! unsupported; RuntimeCheck is unsupported upstream as well.
@@ -59,12 +59,29 @@ pub struct EngineResult {
 pub(crate) struct Frame {
     pub function: usize,
     pub values: BTreeMap<String, Value>,
+    pub cells: u64,
     pub block: String,
     pub iters: BTreeMap<String, u64>,
     pub ip: usize,
     /// Frame sequence within the execution (entry frame is 0).
     /// Stable for the frame's lifetime; used for value identity.
     pub seq: u64,
+}
+
+impl Frame {
+    fn insert_value(&mut self, identity: String, value: Value) {
+        let cells = value.cells();
+        if let Some(old) = self.values.insert(identity, value) {
+            self.cells = self.cells.saturating_sub(old.cells());
+        }
+        self.cells = self.cells.saturating_add(cells);
+    }
+
+    fn remove_value(&mut self, identity: &str) -> Option<Value> {
+        let old = self.values.remove(identity)?;
+        self.cells = self.cells.saturating_sub(old.cells());
+        Some(old)
+    }
 }
 
 /// A pushed caller awaiting a callee return.
@@ -198,6 +215,7 @@ impl<'a> Engine<'a> {
             frame: Frame {
                 function: function_index,
                 values: BTreeMap::new(),
+                cells: 0,
                 block: String::new(),
                 iters: BTreeMap::new(),
                 ip: 0,
@@ -229,11 +247,25 @@ impl<'a> Engine<'a> {
 
     /// Live value cells held by one frame (saturating).
     fn frame_cells(frame: &Frame) -> u64 {
-        frame
-            .values
-            .values()
-            .map(Value::cells)
-            .fold(0, u64::saturating_add)
+        frame.cells
+    }
+
+    /// Reconcile logical live-cell accounting after an instruction
+    /// changes the frame's bindings. This charges newly produced values
+    /// such as copied sequences and releases values replaced by outputs.
+    fn reconcile_frame_cells(
+        &self,
+        state: &mut State,
+        previous: u64,
+        frame: &Frame,
+    ) -> Result<(), Outcome> {
+        let current = Self::frame_cells(frame);
+        if current > previous {
+            state.usage.note_cells(current - previous, &self.envelope)?;
+        } else {
+            state.usage.release_cells(previous - current);
+        }
+        Ok(())
     }
 
     /// Bind entry arguments to function inputs by position with arity
@@ -266,7 +298,7 @@ impl<'a> Engine<'a> {
             }
             let cells = value.cells();
             state.usage.note_cells(cells, &self.envelope)?;
-            frame.values.insert(input.identity.0.clone(), value);
+            frame.insert_value(input.identity.0.clone(), value);
         }
         function
             .blocks
@@ -315,11 +347,11 @@ impl<'a> Engine<'a> {
             let cells = value.cells();
             // Rebinding drops the previous value: release its cells
             // so accounting tracks live values, not history.
-            if let Some(old) = frame.values.remove(&identity) {
+            if let Some(old) = frame.remove_value(&identity) {
                 state.usage.release_cells(old.cells());
             }
             state.usage.note_cells(cells, &self.envelope)?;
-            frame.values.insert(identity, value);
+            frame.insert_value(identity, value);
         }
         Ok(())
     }
@@ -407,6 +439,7 @@ impl<'a> Engine<'a> {
                 if let Err(outcome) = parts.state.usage.charge_step(&self.envelope) {
                     return self.terminal(parts, dbg, outcome);
                 }
+                let frame_cells_before = Self::frame_cells(&parts.frame);
                 match self.step_instruction(
                     &mut parts.state,
                     &mut parts.frame,
@@ -415,6 +448,13 @@ impl<'a> Engine<'a> {
                     dbg.as_deref_mut(),
                 ) {
                     Step::Continue => {
+                        if let Err(outcome) = self.reconcile_frame_cells(
+                            &mut parts.state,
+                            frame_cells_before,
+                            &parts.frame,
+                        ) {
+                            return self.terminal(parts, dbg, outcome);
+                        }
                         if let Some(driver) = dbg.as_deref_mut() {
                             driver.after_operation(
                                 parts.frame.seq,
@@ -529,6 +569,13 @@ impl<'a> Engine<'a> {
                         break;
                     }
                     Step::Suspend(kind) => {
+                        if let Err(outcome) = self.reconcile_frame_cells(
+                            &mut parts.state,
+                            frame_cells_before,
+                            &parts.frame,
+                        ) {
+                            return self.terminal(parts, dbg, outcome);
+                        }
                         return self.suspend_effect(parts, dbg, instruction, kind);
                     }
                     Step::Halt(outcome) => return self.terminal(parts, dbg, outcome),
@@ -582,6 +629,7 @@ impl<'a> Engine<'a> {
                     // cells so accounting tracks live values.
                     let dead = Self::frame_cells(&parts.frame);
                     parts.state.usage.release_cells(dead);
+                    let caller_cells_before = Self::frame_cells(&caller.frame);
                     parts.frame = caller.frame;
                     // The call instruction sits at the restored ip;
                     // capture it before advancing past the call.
@@ -599,8 +647,15 @@ impl<'a> Engine<'a> {
                     }
                     if let Some(output) = caller.output {
                         if let Some(value) = parts.state.completed.first().cloned() {
-                            parts.frame.values.insert(output, value);
+                            parts.frame.insert_value(output, value);
                         }
+                    }
+                    if let Err(outcome) = self.reconcile_frame_cells(
+                        &mut parts.state,
+                        caller_cells_before,
+                        &parts.frame,
+                    ) {
+                        return self.terminal(parts, dbg, outcome);
                     }
                     // Resuming the caller mid-block: skip entry
                     // accounting once at the loop top.
@@ -906,7 +961,7 @@ impl<'a> Engine<'a> {
         };
         let emit = |frame: &mut Frame, value: Value| {
             if let Some(output) = instruction.outputs.first() {
-                frame.values.insert(output.identity.0.clone(), value);
+                frame.insert_value(output.identity.0.clone(), value);
             }
         };
         match &instruction.kind {
@@ -1215,7 +1270,7 @@ impl<'a> Engine<'a> {
                     };
                     payload.push((field.clone(), value));
                 }
-                frame.values.insert(
+                frame.insert_value(
                     output_id,
                     Value::Finite {
                         type_id: type_identity.0.clone(),
@@ -1301,7 +1356,7 @@ impl<'a> Engine<'a> {
                     };
                     elements.push(value);
                 }
-                frame.values.insert(
+                frame.insert_value(
                     output_id,
                     Value::Sequence {
                         elements: Arc::new(elements),
@@ -1422,6 +1477,111 @@ impl<'a> Engine<'a> {
                 );
                 Step::Continue
             }
+            SsaInstructionKind::SequenceCopy {
+                dst_bound,
+                src_bound,
+                ..
+            } => {
+                let mncs_model::SequenceBound::Exact(dst_length) = dst_bound else {
+                    return unsupported(
+                        "functional span copy requires an exact-bound destination".to_owned(),
+                    );
+                };
+                if instruction.inputs.len() != 5 {
+                    return invalid("span copy requires five operands".to_owned());
+                }
+                let (
+                    Some(Value::Sequence {
+                        elements: destination,
+                    }),
+                    Some(Value::Integer { value: dst_at, .. }),
+                    Some(Value::Sequence { elements: source }),
+                    Some(Value::Integer { value: src_at, .. }),
+                    Some(Value::Integer { value: len, .. }),
+                ) = (
+                    instruction
+                        .inputs
+                        .first()
+                        .and_then(|identity| frame.values.get(&identity.0)),
+                    instruction
+                        .inputs
+                        .get(1)
+                        .and_then(|identity| frame.values.get(&identity.0)),
+                    instruction
+                        .inputs
+                        .get(2)
+                        .and_then(|identity| frame.values.get(&identity.0)),
+                    instruction
+                        .inputs
+                        .get(3)
+                        .and_then(|identity| frame.values.get(&identity.0)),
+                    instruction
+                        .inputs
+                        .get(4)
+                        .and_then(|identity| frame.values.get(&identity.0)),
+                )
+                else {
+                    return invalid("span copy operands were mistyped".to_owned());
+                };
+
+                let dst_length = *dst_length as usize;
+                let source_bound_valid = match src_bound {
+                    mncs_model::SequenceBound::Exact(length) => source.len() == *length as usize,
+                    _ => source.len() <= sequence_capacity(src_bound),
+                };
+                if destination.len() != dst_length || !source_bound_valid {
+                    return invalid(
+                        "span copy sequence does not match its declared bound".to_owned(),
+                    );
+                }
+                let windows_valid = [dst_at, src_at, len].iter().all(|value| **value >= 0)
+                    && (*dst_at as u128) + (*len as u128) <= dst_length as u128
+                    && (*src_at as u128) + (*len as u128) <= source.len() as u128;
+                if !windows_valid {
+                    return halt_program(
+                        "span copy range exceeds the destination bound or source length",
+                    );
+                }
+
+                let (Ok(dst_start), Ok(src_start), Ok(copy_len)) = (
+                    usize::try_from(*dst_at),
+                    usize::try_from(*src_at),
+                    usize::try_from(*len),
+                ) else {
+                    return halt_program("span copy range cannot be represented by this runtime");
+                };
+                let dst_end = dst_start + copy_len;
+                let src_end = src_start + copy_len;
+                let result_cells = Value::Sequence {
+                    elements: Arc::clone(destination),
+                }
+                .cells();
+                let old_output_cells = instruction
+                    .outputs
+                    .first()
+                    .and_then(|output| frame.values.get(&output.identity.0))
+                    .map(Value::cells)
+                    .unwrap_or(0);
+                let additional_cells = result_cells.saturating_sub(old_output_cells);
+                if self.envelope.limit_of("memory_cells").is_some_and(|limit| {
+                    state.usage.memory_cells.saturating_add(additional_cells) > limit
+                }) {
+                    let Err(outcome) = state.usage.note_cells(additional_cells, &self.envelope)
+                    else {
+                        unreachable!("preflight exceeded the same memory envelope");
+                    };
+                    return Step::Halt(outcome);
+                }
+                let mut updated = destination.as_ref().clone();
+                updated[dst_start..dst_end].clone_from_slice(&source[src_start..src_end]);
+                emit(
+                    frame,
+                    Value::Sequence {
+                        elements: Arc::new(updated),
+                    },
+                );
+                Step::Continue
+            }
             SsaInstructionKind::BoundCheck { bound } => {
                 if instruction.inputs.len() != 1 {
                     return invalid("bound check requires one operand".to_owned());
@@ -1502,6 +1662,7 @@ impl<'a> Engine<'a> {
                         Frame {
                             function: callee_index,
                             values: BTreeMap::new(),
+                            cells: 0,
                             block: String::new(),
                             iters: BTreeMap::new(),
                             ip: 0,
@@ -1645,7 +1806,7 @@ impl<'a> Engine<'a> {
                             });
                         }
                         for (output, value) in instruction.outputs.iter().zip(outputs) {
-                            frame.values.insert(output.identity.0.clone(), value);
+                            frame.insert_value(output.identity.0.clone(), value);
                         }
                         if let Some(driver) = dbg.as_deref_mut() {
                             let reasons = driver.after_effect(
