@@ -14,7 +14,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
-use mncs_vm::admit::Admitted;
+use mncs_vm::admit::{admit_owned, Admitted};
 use mncs_vm::capability::{CapabilityEnv, ConstProvider, EffectRequest, EffectResponse, Provider};
 use mncs_vm::debug::{DebugConfig, DebugError, DebugStart, LiveEvent, StopTarget};
 use mncs_vm::engine::CallTarget;
@@ -29,6 +29,10 @@ const STRUCTURED_FILE_PROVIDER_SCHEMA_MULTI_OUTPUT: &str = "mncs.vm.structured-f
 const STRUCTURED_DIGEST_PROVIDER_SCHEMA: &str = "mncs.vm.structured-digest-provider/1";
 const MAX_STRUCTURED_FILE_INPUT_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_STRUCTURED_FILE_OUTPUT_BYTES: u64 = 512 * 1024;
+const BATCH_SUMMARY_ARTIFACT: &[u8] =
+    include_bytes!("../../native/mncs/vm/batch_summary.artifact.json");
+const BATCH_SUMMARY_MODULE: &str = "mncs.vm.batch_summary.v1";
+const BATCH_SUMMARY_CHUNK_SIZE: usize = 64;
 
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
@@ -415,6 +419,248 @@ struct BatchCall {
     request: mncs_model::ExecutionRequest,
 }
 
+#[derive(Clone, Debug, Default)]
+struct NativeBatchSummaryState {
+    calls: u64,
+    completed: u64,
+    program_failure: u64,
+    trap: u64,
+    capability_denied: u64,
+    unsupported: u64,
+    invalid_request: u64,
+    budget_exhausted: u64,
+    provider_failure: u64,
+    host_failure: u64,
+    terminated: u64,
+    steps_total: u64,
+    steps_max: u64,
+    memory_cells_max: u64,
+    effects_total: u64,
+    call_depth_max: u64,
+    unrecognized_outcomes: u64,
+    overflowed: bool,
+}
+
+#[derive(Clone, Debug)]
+struct BatchCallFacts {
+    outcome_tag: Vec<u8>,
+    steps: u64,
+    memory_cells: u64,
+    effects: u64,
+    call_depth: u64,
+}
+
+fn batch_u64_value(value: u64) -> mncs_model::ExecutionValue {
+    mncs_model::ExecutionValue::Integer {
+        value: i128::from(value),
+        ty: mncs_model::IntegerType {
+            bits: 64,
+            signed: false,
+        },
+    }
+}
+
+fn batch_sequence(values: Vec<mncs_model::ExecutionValue>) -> mncs_model::ExecutionValue {
+    mncs_model::ExecutionValue::Sequence {
+        values: std::sync::Arc::new(values),
+    }
+}
+
+fn batch_summary_arguments(
+    state: &NativeBatchSummaryState,
+    facts: &[BatchCallFacts],
+) -> Vec<mncs_model::ExecutionValue> {
+    use mncs_model::ExecutionValue as WireValue;
+
+    let mut arguments = vec![
+        batch_u64_value(state.calls),
+        batch_u64_value(state.completed),
+        batch_u64_value(state.program_failure),
+        batch_u64_value(state.trap),
+        batch_u64_value(state.capability_denied),
+        batch_u64_value(state.unsupported),
+        batch_u64_value(state.invalid_request),
+        batch_u64_value(state.budget_exhausted),
+        batch_u64_value(state.provider_failure),
+        batch_u64_value(state.host_failure),
+        batch_u64_value(state.terminated),
+        batch_u64_value(state.steps_total),
+        batch_u64_value(state.steps_max),
+        batch_u64_value(state.memory_cells_max),
+        batch_u64_value(state.effects_total),
+        batch_u64_value(state.call_depth_max),
+        batch_u64_value(state.unrecognized_outcomes),
+        WireValue::Boolean {
+            value: state.overflowed,
+        },
+    ];
+    arguments.push(batch_sequence(
+        facts
+            .iter()
+            .map(|fact| {
+                batch_sequence(
+                    fact.outcome_tag
+                        .iter()
+                        .copied()
+                        .map(|value| WireValue::Byte {
+                            value: i128::from(value),
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+    ));
+    for values in [
+        facts.iter().map(|fact| fact.steps).collect::<Vec<_>>(),
+        facts
+            .iter()
+            .map(|fact| fact.memory_cells)
+            .collect::<Vec<_>>(),
+        facts.iter().map(|fact| fact.effects).collect::<Vec<_>>(),
+        facts.iter().map(|fact| fact.call_depth).collect::<Vec<_>>(),
+    ] {
+        arguments.push(batch_sequence(
+            values.into_iter().map(batch_u64_value).collect(),
+        ));
+    }
+    arguments
+}
+
+fn batch_summary_field<'a>(
+    fields: &'a [(String, mncs_model::ExecutionValue)],
+    name: &str,
+) -> Result<&'a mncs_model::ExecutionValue, String> {
+    fields
+        .iter()
+        .find_map(|(field, value)| (field == name).then_some(value))
+        .ok_or_else(|| format!("native batch summary omitted field {name:?}"))
+}
+
+fn batch_summary_number(
+    fields: &[(String, mncs_model::ExecutionValue)],
+    name: &str,
+) -> Result<u64, String> {
+    match batch_summary_field(fields, name)? {
+        mncs_model::ExecutionValue::Integer { value, .. } => u64::try_from(*value)
+            .map_err(|_| format!("native batch summary field {name:?} is outside u64")),
+        value => Err(format!(
+            "native batch summary field {name:?} is not an integer: {value:?}"
+        )),
+    }
+}
+
+fn batch_summary_bool(
+    fields: &[(String, mncs_model::ExecutionValue)],
+    name: &str,
+) -> Result<bool, String> {
+    match batch_summary_field(fields, name)? {
+        mncs_model::ExecutionValue::Boolean { value } => Ok(*value),
+        value => Err(format!(
+            "native batch summary field {name:?} is not a boolean: {value:?}"
+        )),
+    }
+}
+
+fn decode_batch_summary(
+    value: &mncs_model::ExecutionValue,
+) -> Result<NativeBatchSummaryState, String> {
+    let mncs_model::ExecutionValue::Record { name, fields, .. } = value else {
+        return Err(format!("native summary returned a non-record: {value:?}"));
+    };
+    if name != "BatchSummary" {
+        return Err(format!(
+            "native summary returned unexpected record {name:?}"
+        ));
+    }
+    let fields = fields.as_slice();
+    if !batch_summary_bool(fields, "valid")? {
+        return Err("native summary rejected metric sequences with unequal lengths".to_owned());
+    }
+    let state = NativeBatchSummaryState {
+        calls: batch_summary_number(fields, "calls")?,
+        completed: batch_summary_number(fields, "completed")?,
+        program_failure: batch_summary_number(fields, "program_failure")?,
+        trap: batch_summary_number(fields, "trap")?,
+        capability_denied: batch_summary_number(fields, "capability_denied")?,
+        unsupported: batch_summary_number(fields, "unsupported")?,
+        invalid_request: batch_summary_number(fields, "invalid_request")?,
+        budget_exhausted: batch_summary_number(fields, "budget_exhausted")?,
+        provider_failure: batch_summary_number(fields, "provider_failure")?,
+        host_failure: batch_summary_number(fields, "host_failure")?,
+        terminated: batch_summary_number(fields, "terminated")?,
+        steps_total: batch_summary_number(fields, "steps_total")?,
+        steps_max: batch_summary_number(fields, "steps_max")?,
+        memory_cells_max: batch_summary_number(fields, "memory_cells_max")?,
+        effects_total: batch_summary_number(fields, "effects_total")?,
+        call_depth_max: batch_summary_number(fields, "call_depth_max")?,
+        unrecognized_outcomes: batch_summary_number(fields, "unrecognized_outcomes")?,
+        overflowed: batch_summary_bool(fields, "overflowed")?,
+    };
+    if state.unrecognized_outcomes != 0 {
+        return Err(format!(
+            "native summary encountered {} unrecognized outcome tags",
+            state.unrecognized_outcomes
+        ));
+    }
+    if state.overflowed {
+        return Err("native batch summary counter overflow".to_owned());
+    }
+    Ok(state)
+}
+
+fn summarize_batch_chunk(
+    session: &mut Session,
+    caps: &CapabilityEnv,
+    state: &NativeBatchSummaryState,
+    facts: &[BatchCallFacts],
+) -> Result<NativeBatchSummaryState, String> {
+    if facts.len() > BATCH_SUMMARY_CHUNK_SIZE {
+        return Err("native batch summary chunk exceeds its bound".to_owned());
+    }
+    let (outcome, record) = session.call(
+        caps,
+        CallSpec {
+            target: CallTarget::ByName {
+                module: BATCH_SUMMARY_MODULE.to_owned(),
+                name: "summarize_chunk".to_owned(),
+            },
+            arguments: batch_summary_arguments(state, facts),
+            type_arguments: Vec::new(),
+            envelope: ResourceEnvelope::default(),
+        },
+    );
+    if !outcome.is_completed() {
+        return Err(format!("native batch summary failed: {outcome:?}"));
+    }
+    if record.returned.len() != 1 {
+        return Err(format!(
+            "native batch summary returned {} values, expected one",
+            record.returned.len()
+        ));
+    }
+    decode_batch_summary(&to_wire(&record.returned[0]))
+}
+
+impl NativeBatchSummaryState {
+    fn outcome_counts(&self) -> BTreeMap<String, u64> {
+        [
+            ("completed", self.completed),
+            ("program_failure", self.program_failure),
+            ("trap", self.trap),
+            ("capability_denied", self.capability_denied),
+            ("unsupported", self.unsupported),
+            ("invalid_request", self.invalid_request),
+            ("budget_exhausted", self.budget_exhausted),
+            ("provider_failure", self.provider_failure),
+            ("host_failure", self.host_failure),
+            ("terminated", self.terminated),
+        ]
+        .into_iter()
+        .filter_map(|(tag, count)| (count != 0).then(|| (tag.to_owned(), count)))
+        .collect()
+    }
+}
+
 fn cmd_batch(argv: &[String]) -> i32 {
     let mut artifact_path: Option<PathBuf> = None;
     let mut calls_path: Option<PathBuf> = None;
@@ -479,14 +725,19 @@ fn cmd_batch(argv: &[String]) -> i32 {
         Err(error) => return run_error(&format!("bad calls {}: {error}", calls_path.display())),
     };
     let caps = CapabilityEnv::empty();
+    let summary_admitted = match admit_owned(BATCH_SUMMARY_ARTIFACT.to_vec()) {
+        Ok(admitted) => admitted,
+        Err(refusal) => {
+            return run_error(&format!(
+                "native batch summary admission refused: {refusal}"
+            ))
+        }
+    };
     let mut session = Session::open(&admitted);
+    let mut summary_session = Session::open(&summary_admitted);
+    let mut summary_state = NativeBatchSummaryState::default();
+    let mut summary_chunk = Vec::with_capacity(BATCH_SUMMARY_CHUNK_SIZE);
     let mut results = Vec::with_capacity(calls.len());
-    let mut kinds: BTreeMap<String, u64> = BTreeMap::new();
-    let mut steps_total: u64 = 0;
-    let mut steps_max: u64 = 0;
-    let mut memory_cells_max: u64 = 0;
-    let mut effects_total: u64 = 0;
-    let mut call_depth_max: u64 = 0;
     for call in calls.iter() {
         let spec = match CallSpec::from_request(
             call.request.clone(),
@@ -496,12 +747,25 @@ fn cmd_batch(argv: &[String]) -> i32 {
             Err(reason) => return run_error(&format!("call {}: {reason}", call.id)),
         };
         let (outcome, record) = session.call(&caps, spec);
-        *kinds.entry(outcome.tag().to_owned()).or_insert(0) += 1;
-        steps_total += record.usage.steps;
-        steps_max = steps_max.max(record.usage.steps);
-        memory_cells_max = memory_cells_max.max(record.usage.max_memory_cells);
-        effects_total += record.usage.effects;
-        call_depth_max = call_depth_max.max(record.usage.max_call_depth);
+        summary_chunk.push(BatchCallFacts {
+            outcome_tag: outcome.tag().as_bytes().to_vec(),
+            steps: record.usage.steps,
+            memory_cells: record.usage.max_memory_cells,
+            effects: record.usage.effects,
+            call_depth: record.usage.max_call_depth,
+        });
+        if summary_chunk.len() == BATCH_SUMMARY_CHUNK_SIZE {
+            summary_state = match summarize_batch_chunk(
+                &mut summary_session,
+                &caps,
+                &summary_state,
+                &summary_chunk,
+            ) {
+                Ok(state) => state,
+                Err(message) => return run_error(&message),
+            };
+            summary_chunk.clear();
+        }
         // Batch drops the argument echo: the caller holds the request
         // stream and joins on id, so retaining 256-element blobs per
         // result would bloat large batches ~10x for no evidence.
@@ -516,17 +780,28 @@ fn cmd_batch(argv: &[String]) -> i32 {
             "record": record_value,
         }));
     }
+    if !summary_chunk.is_empty() {
+        summary_state = match summarize_batch_chunk(
+            &mut summary_session,
+            &caps,
+            &summary_state,
+            &summary_chunk,
+        ) {
+            Ok(state) => state,
+            Err(message) => return run_error(&message),
+        };
+    }
     let document = serde_json::json!({
         "artifact_id": admitted.artifact_id(),
         "results": results,
         "summary": {
-            "calls": calls.len(),
-            "outcomes": kinds,
-            "steps_total": steps_total,
-            "steps_max": steps_max,
-            "memory_cells_max": memory_cells_max,
-            "effects_total": effects_total,
-            "call_depth_max": call_depth_max,
+            "calls": summary_state.calls,
+            "outcomes": summary_state.outcome_counts(),
+            "steps_total": summary_state.steps_total,
+            "steps_max": summary_state.steps_max,
+            "memory_cells_max": summary_state.memory_cells_max,
+            "effects_total": summary_state.effects_total,
+            "call_depth_max": summary_state.call_depth_max,
         },
     });
     if let Err(error) = std::fs::write(

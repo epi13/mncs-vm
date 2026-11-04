@@ -193,16 +193,18 @@ fn batch_executes_many_calls_with_summary() {
     );
     let calls_path = std::env::temp_dir().join(format!("mncs-vm-cli-batch-calls-{stamp}.json"));
     let output_path = std::env::temp_dir().join(format!("mncs-vm-cli-batch-out-{stamp}.json"));
-    std::fs::write(
-        &calls_path,
-        serde_json::to_string(&serde_json::json!([
-            {"id": "add", "request": {"schema_version":"0.1", "target":{"module":"mncs.vmcorpus.arith.v1","function":"add2"}, "step_budget":12345, "arguments":[int_arg(3),int_arg(4)]}},
-            {"id": "mul", "request": {"schema_version":"0.1", "target":{"module":"mncs.vmcorpus.arith.v1","function":"muladd"}, "step_budget":12345, "arguments":[int_arg(2),int_arg(3),int_arg(4)]}},
-            {"id": "bogus", "request": {"schema_version":"0.1", "target":{"module":"mncs.vmcorpus.arith.v1","function":"missing"}, "step_budget":12345, "arguments":[]}},
-        ]))
-        .unwrap(),
-    )
-    .unwrap();
+    let mut calls = vec![
+        serde_json::json!({"id": "add", "request": {"schema_version":"0.1", "target":{"module":"mncs.vmcorpus.arith.v1","function":"add2"}, "step_budget":12345, "arguments":[int_arg(3),int_arg(4)]}}),
+        serde_json::json!({"id": "mul", "request": {"schema_version":"0.1", "target":{"module":"mncs.vmcorpus.arith.v1","function":"muladd"}, "step_budget":12345, "arguments":[int_arg(2),int_arg(3),int_arg(4)]}}),
+    ];
+    for index in 2..64 {
+        calls.push(serde_json::json!({
+            "id": format!("add-{index}"),
+            "request": {"schema_version":"0.1", "target":{"module":"mncs.vmcorpus.arith.v1","function":"add2"}, "step_budget":12345, "arguments":[int_arg(index),int_arg(1)]}
+        }));
+    }
+    calls.push(serde_json::json!({"id": "bogus", "request": {"schema_version":"0.1", "target":{"module":"mncs.vmcorpus.arith.v1","function":"missing"}, "step_budget":12345, "arguments":[]}}));
+    std::fs::write(&calls_path, serde_json::to_string(&calls).unwrap()).unwrap();
     let output = Command::new(bin())
         .args([
             "batch",
@@ -225,8 +227,8 @@ fn batch_executes_many_calls_with_summary() {
     let _ = std::fs::remove_file(&artifact_path);
     let _ = std::fs::remove_file(&calls_path);
     let _ = std::fs::remove_file(&output_path);
-    assert_eq!(document["summary"]["calls"], 3);
-    assert_eq!(document["summary"]["outcomes"]["completed"], 2);
+    assert_eq!(document["summary"]["calls"], 65);
+    assert_eq!(document["summary"]["outcomes"]["completed"], 64);
     assert_eq!(document["summary"]["outcomes"]["invalid_request"], 1);
     assert!(document["summary"]["steps_total"].as_u64().unwrap() > 0);
     let results = document["results"].as_array().unwrap();
@@ -238,7 +240,7 @@ fn batch_executes_many_calls_with_summary() {
         .any(|limit| limit["dimension"] == "steps" && limit["limit"] == 12345));
     assert_eq!(results[0]["record"]["returned"][0]["Integer"]["value"], 7);
     assert_eq!(results[1]["record"]["returned"][0]["Integer"]["value"], 10);
-    assert_eq!(results[2]["outcome"]["kind"], "invalid_request");
+    assert_eq!(results[64]["outcome"]["kind"], "invalid_request");
 }
 
 #[test]

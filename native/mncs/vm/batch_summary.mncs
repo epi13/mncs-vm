@@ -1,0 +1,202 @@
+// VM-owned batch reduction. The host supplies bounded observations and
+// projects the typed result to the existing JSON summary contract.
+mncs 0.18;
+
+module mncs.vm.batch_summary.v1;
+
+record BatchSummary {
+    calls: u64,
+    completed: u64,
+    program_failure: u64,
+    trap: u64,
+    capability_denied: u64,
+    unsupported: u64,
+    invalid_request: u64,
+    budget_exhausted: u64,
+    provider_failure: u64,
+    host_failure: u64,
+    terminated: u64,
+    steps_total: u64,
+    steps_max: u64,
+    memory_cells_max: u64,
+    effects_total: u64,
+    call_depth_max: u64,
+    unrecognized_outcomes: u64,
+    overflowed: bool,
+    valid: bool
+}
+fn byte_string_equal(left: [byte; up_to 32], right: [byte; up_to 32]) -> (result: bool) {
+    if left.len != right.len {
+        return false;
+    }
+    iterate i over left carrying same: bool = true {
+        next same = same && left[i] == right[i];
+    }
+    return same;
+}
+
+fn maximum(left: u64, right: u64) -> (result: u64) {
+    if left > right {
+        return left;
+    }
+    return right;
+}
+
+// The numeric codes are private to this reducer. Unknown tags are retained as
+// an explicit count so a future Outcome variant cannot disappear from totals.
+fn outcome_code(tag: [byte; up_to 32]) -> (result: u64) {
+    if byte_string_equal(tag, [99, 111, 109, 112, 108, 101, 116, 101, 100]) {
+        return 0;
+    }
+    if byte_string_equal(tag, [112, 114, 111, 103, 114, 97, 109, 95, 102, 97, 105, 108, 117, 114, 101]) {
+        return 1;
+    }
+    if byte_string_equal(tag, [116, 114, 97, 112]) {
+        return 2;
+    }
+    if byte_string_equal(tag, [99, 97, 112, 97, 98, 105, 108, 105, 116, 121, 95, 100, 101, 110, 105, 101, 100]) {
+        return 3;
+    }
+    if byte_string_equal(tag, [117, 110, 115, 117, 112, 112, 111, 114, 116, 101, 100]) {
+        return 4;
+    }
+    if byte_string_equal(tag, [105, 110, 118, 97, 108, 105, 100, 95, 114, 101, 113, 117, 101, 115, 116]) {
+        return 5;
+    }
+    if byte_string_equal(tag, [98, 117, 100, 103, 101, 116, 95, 101, 120, 104, 97, 117, 115, 116, 101, 100]) {
+        return 6;
+    }
+    if byte_string_equal(tag, [112, 114, 111, 118, 105, 100, 101, 114, 95, 102, 97, 105, 108, 117, 114, 101]) {
+        return 7;
+    }
+    if byte_string_equal(tag, [104, 111, 115, 116, 95, 102, 97, 105, 108, 117, 114, 101]) {
+        return 8;
+    }
+    if byte_string_equal(tag, [116, 101, 114, 109, 105, 110, 97, 116, 101, 100]) {
+        return 9;
+    }
+    return 10;
+}
+
+fn summary_step(
+    current: BatchSummary,
+    code: u64,
+    steps: u64,
+    memory_cells: u64,
+    effects: u64,
+    call_depth: u64
+) -> (result: BatchSummary) {
+    let counted: BatchSummary = match code {
+        0 => BatchSummary { ..current, completed: current.completed +% 1 },
+        1 => BatchSummary { ..current, program_failure: current.program_failure +% 1 },
+        2 => BatchSummary { ..current, trap: current.trap +% 1 },
+        3 => BatchSummary { ..current, capability_denied: current.capability_denied +% 1 },
+        4 => BatchSummary { ..current, unsupported: current.unsupported +% 1 },
+        5 => BatchSummary { ..current, invalid_request: current.invalid_request +% 1 },
+        6 => BatchSummary { ..current, budget_exhausted: current.budget_exhausted +% 1 },
+        7 => BatchSummary { ..current, provider_failure: current.provider_failure +% 1 },
+        8 => BatchSummary { ..current, host_failure: current.host_failure +% 1 },
+        9 => BatchSummary { ..current, terminated: current.terminated +% 1 },
+        _ => BatchSummary { ..current, unrecognized_outcomes: current.unrecognized_outcomes +% 1 }
+    };
+    let count_overflowed: bool = match code {
+        0 => counted.completed < current.completed,
+        1 => counted.program_failure < current.program_failure,
+        2 => counted.trap < current.trap,
+        3 => counted.capability_denied < current.capability_denied,
+        4 => counted.unsupported < current.unsupported,
+        5 => counted.invalid_request < current.invalid_request,
+        6 => counted.budget_exhausted < current.budget_exhausted,
+        7 => counted.provider_failure < current.provider_failure,
+        8 => counted.host_failure < current.host_failure,
+        9 => counted.terminated < current.terminated,
+        _ => counted.unrecognized_outcomes < current.unrecognized_outcomes
+    };
+    let calls: u64 = current.calls +% 1;
+    let steps_total: u64 = current.steps_total +% steps;
+    let effects_total: u64 = current.effects_total +% effects;
+    let steps_max: u64 = maximum(current.steps_max, steps);
+    let memory_cells_max: u64 = maximum(current.memory_cells_max, memory_cells);
+    let call_depth_max: u64 = maximum(current.call_depth_max, call_depth);
+    let overflowed: bool = current.overflowed
+        || calls < current.calls
+        || count_overflowed
+        || steps_total < current.steps_total
+        || effects_total < current.effects_total;
+    return BatchSummary {
+        ..counted,
+        calls: calls,
+        steps_total: steps_total,
+        steps_max: steps_max,
+        memory_cells_max: memory_cells_max,
+        effects_total: effects_total,
+        call_depth_max: call_depth_max,
+        overflowed: overflowed
+    };
+}
+
+fn summarize_chunk(
+    prior_calls: u64,
+    prior_completed: u64,
+    prior_program_failure: u64,
+    prior_trap: u64,
+    prior_capability_denied: u64,
+    prior_unsupported: u64,
+    prior_invalid_request: u64,
+    prior_budget_exhausted: u64,
+    prior_provider_failure: u64,
+    prior_host_failure: u64,
+    prior_terminated: u64,
+    prior_steps_total: u64,
+    prior_steps_max: u64,
+    prior_memory_cells_max: u64,
+    prior_effects_total: u64,
+    prior_call_depth_max: u64,
+    prior_unrecognized_outcomes: u64,
+    prior_overflowed: bool,
+    outcome_tags: [[byte; up_to 32]; up_to 64],
+    steps: [u64; up_to 64],
+    memory_cells: [u64; up_to 64],
+    effects: [u64; up_to 64],
+    call_depths: [u64; up_to 64]
+) -> (result: BatchSummary) {
+    let initial: BatchSummary = BatchSummary {
+        calls: prior_calls,
+        completed: prior_completed,
+        program_failure: prior_program_failure,
+        trap: prior_trap,
+        capability_denied: prior_capability_denied,
+        unsupported: prior_unsupported,
+        invalid_request: prior_invalid_request,
+        budget_exhausted: prior_budget_exhausted,
+        provider_failure: prior_provider_failure,
+        host_failure: prior_host_failure,
+        terminated: prior_terminated,
+        steps_total: prior_steps_total,
+        steps_max: prior_steps_max,
+        memory_cells_max: prior_memory_cells_max,
+        effects_total: prior_effects_total,
+        call_depth_max: prior_call_depth_max,
+        unrecognized_outcomes: prior_unrecognized_outcomes,
+        overflowed: prior_overflowed,
+        valid: true
+    };
+    if outcome_tags.len != steps.len
+        || outcome_tags.len != memory_cells.len
+        || outcome_tags.len != effects.len
+        || outcome_tags.len != call_depths.len {
+        return BatchSummary { ..initial, valid: false };
+    }
+    iterate i over outcome_tags carrying summary: BatchSummary = initial {
+        let code: u64 = outcome_code(outcome_tags[i]);
+        next summary = summary_step(
+            summary,
+            code,
+            steps[i],
+            memory_cells[i],
+            effects[i],
+            call_depths[i]
+        );
+    }
+    return summary;
+}

@@ -316,6 +316,15 @@ also tighten limits. Duplicate/unknown override dimensions are refused.
 Host grants and non-default execution policies require explicit VM capability
 bindings and are refused by this batch adapter. No authority is inferred.
 
+Batch outcome counts and resource aggregates are reduced by the compiled
+MNCS module in `native/mncs/vm/batch_summary.mncs`. The Rust adapter transports
+at most 64 outcome/usage observations per native call, then projects the typed
+summary into the existing JSON shape. Request decoding, VM execution, result
+retention, and JSON serialization remain at the host boundary. The generated
+artifact is checked in and embedded; regenerate it with
+`cargo run --offline --example generate_batch_summary` after editing the MNCS
+source. The VM build receipt includes both the native source and artifact.
+
 Compiler/language iteration bounds stay in frozen SSA; request fuel stays
 in the call contract; VM consumption stays in `ExecutionRecord.usage`.
 Records report effective merged limits, including artifact bounds. Nested

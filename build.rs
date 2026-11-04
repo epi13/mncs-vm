@@ -95,6 +95,7 @@ fn main() {
     ];
     let inputs = [
         vm_root.join("src"),
+        vm_root.join("native"),
         vm_root.join("Cargo.toml"),
         vm_root.join("Cargo.lock"),
         vm_root.join("build.rs"),
