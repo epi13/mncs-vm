@@ -1,7 +1,7 @@
 {
   "schema_version": "mncs-family.repository-manifest/v0alpha1",
   "repository": "mncs-vm",
-  "revision": 3,
+  "revision": 4,
   "manifest_location": "in-repository",
   "authority": {
     "note": "VM owns the execution semantics of the MNCS-native virtual machine over frozen artifacts; it does not own source semantics, storage, placement, scheduling, testing, or model/provenance policy."
@@ -14,7 +14,8 @@
         "kind": "execution-runtime",
         "stability": "experimental",
         "fingerprint_sources": [
-          "src/"
+          "src/",
+          "native/"
         ]
       },
       {
@@ -35,6 +36,7 @@
         },
         "fingerprint_sources": [
           "src/",
+          "native/",
           "python/mncs_vm_client/",
           "tools/provider.py"
         ],
@@ -69,6 +71,7 @@
         },
         "fingerprint_sources": [
           "src/",
+          "native/",
           "python/mncs_vm_client/",
           "tools/provider.py"
         ],
@@ -103,6 +106,7 @@
         },
         "fingerprint_sources": [
           "src/",
+          "native/",
           "python/mncs_vm_client/",
           "tools/provider.py"
         ],
@@ -136,6 +140,7 @@
           "Cargo.lock",
           "build.rs",
           "src/",
+          "native/",
           "python/mncs_vm_client/",
           "tools/provider.py"
         ],
@@ -149,7 +154,21 @@
         }
       }
     ],
-    "consumes": [],
+    "consumes": [
+      {
+        "contract": "mncs-stdlib.stdlib-source",
+        "envelope": {
+          "op": "any"
+        },
+        "required": true,
+        "scope": "The native request policy imports mncs.std.text_scan.v1::equals and its mncs.core.bytes.v1 foundation.",
+        "evidence_refs": [
+          "native/mncs/vm/request_policy.mncs",
+          "src/harness.rs",
+          "build.rs"
+        ]
+      }
+    ],
     "tests": [
       {
         "test": "vm-tests",

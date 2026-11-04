@@ -8,6 +8,11 @@ use mncs_vm::harness::tests_only::compile_corpus;
 use mncs_vm::outcome::Outcome;
 use mncs_vm::resource::{ResourceEnvelope, ResourceLimit};
 use mncs_vm::session::{CallSpec, Session};
+use mncs_vm::{admit, harness};
+
+const REQUEST_POLICY_SOURCE: &str = include_str!("../native/mncs/vm/request_policy.mncs");
+const REQUEST_POLICY_ARTIFACT: &[u8] =
+    include_bytes!("../native/mncs/vm/request_policy.artifact.json");
 
 fn i64_arg(value: i64) -> mncs_model::ExecutionValue {
     mncs_model::ExecutionValue::Integer {
@@ -208,15 +213,201 @@ fn canonical_request_propagates_and_overrides_only_tighten() {
             2
         ],
     };
-    assert!(CallSpec::from_request(request(3, None), Some(&duplicate)).is_err());
+    assert_eq!(
+        CallSpec::from_request(request(3, None), Some(&duplicate))
+            .err()
+            .unwrap(),
+        "unknown or duplicate resource dimension"
+    );
     let unknown = ResourceEnvelope {
         limits: vec![ResourceLimit {
             dimension: "unknown".into(),
             limit: 2,
         }],
     };
-    assert!(CallSpec::from_request(request(3, None), Some(&unknown)).is_err());
+    assert_eq!(
+        CallSpec::from_request(request(3, None), Some(&unknown))
+            .err()
+            .unwrap(),
+        "unknown or duplicate resource dimension"
+    );
     assert!(serde_json::from_value::<mncs_model::ExecutionRequest>(serde_json::json!({"schema_version":"0.1","target":{"module":"m","function":"f"},"arguments":[]})).is_err());
+}
+
+#[test]
+fn canonical_request_policy_covers_every_enforced_dimension() {
+    let overrides = ResourceEnvelope {
+        limits: vec![
+            ResourceLimit {
+                dimension: "steps".into(),
+                limit: 23,
+            },
+            ResourceLimit {
+                dimension: "call_depth".into(),
+                limit: 9,
+            },
+            ResourceLimit {
+                dimension: "memory_cells".into(),
+                limit: 321,
+            },
+            ResourceLimit {
+                dimension: "effects".into(),
+                limit: 4,
+            },
+            ResourceLimit {
+                dimension: "iterations".into(),
+                limit: 17,
+            },
+        ],
+    };
+    let spec = CallSpec::from_request(request(80_000, None), Some(&overrides)).unwrap();
+    for (dimension, expected) in [
+        ("steps", 23),
+        ("call_depth", 9),
+        ("memory_cells", 321),
+        ("effects", 4),
+        ("iterations", 17),
+    ] {
+        assert_eq!(
+            spec.envelope.limit_of(dimension),
+            Some(expected),
+            "{dimension}"
+        );
+    }
+
+    let looser_overrides = ResourceEnvelope {
+        limits: vec![
+            ResourceLimit {
+                dimension: "steps".into(),
+                limit: 90_000,
+            },
+            ResourceLimit {
+                dimension: "call_depth".into(),
+                limit: 2048,
+            },
+            ResourceLimit {
+                dimension: "memory_cells".into(),
+                limit: 20_000_000,
+            },
+            ResourceLimit {
+                dimension: "effects".into(),
+                limit: 2048,
+            },
+            ResourceLimit {
+                dimension: "iterations".into(),
+                limit: 2_000_000,
+            },
+        ],
+    };
+    let spec = CallSpec::from_request(request(80_000, None), Some(&looser_overrides)).unwrap();
+    for (dimension, expected) in [
+        ("steps", 80_000),
+        ("call_depth", 1024),
+        ("memory_cells", 10_000_000),
+        ("effects", 1024),
+        ("iterations", 1_000_000),
+    ] {
+        assert_eq!(
+            spec.envelope.limit_of(dimension),
+            Some(expected),
+            "looser override for {dimension}"
+        );
+    }
+}
+
+#[test]
+fn embedded_request_policy_artifact_matches_its_native_source() {
+    let compiled =
+        harness::compile_source(REQUEST_POLICY_SOURCE, "native/mncs/vm/request_policy.mncs")
+            .expect("request-policy MNCS source compiles and admits");
+    let embedded =
+        admit::admit(REQUEST_POLICY_ARTIFACT).expect("embedded request-policy artifact admits");
+    assert_eq!(compiled.artifact_id(), embedded.artifact_id());
+}
+
+#[test]
+fn canonical_request_policy_preserves_refusal_order_and_bounds() {
+    let mut unsupported = request(50, None);
+    unsupported.schema_version = "0.2".into();
+    unsupported.policy.effects = mncs_model::EffectExecutionPolicy::Realize;
+    unsupported.host_grants.push(mncs_model::HostGrant {
+        capability: "clock_read".into(),
+        locator: "fixture".into(),
+        bytes: vec![1],
+    });
+    let unknown = ResourceEnvelope {
+        limits: vec![ResourceLimit {
+            dimension: "unrecognized".into(),
+            limit: 1,
+        }],
+    };
+    assert_eq!(
+        CallSpec::from_request(unsupported, Some(&unknown))
+            .err()
+            .unwrap(),
+        "unsupported execution request schema"
+    );
+
+    let mut policy_refusal = request(50, None);
+    policy_refusal.policy.effects = mncs_model::EffectExecutionPolicy::Record;
+    assert_eq!(
+        CallSpec::from_request(policy_refusal, Some(&unknown))
+            .err()
+            .unwrap(),
+        "request host grants/policy require explicit VM capability bindings"
+    );
+
+    let mut grants_refusal = request(50, None);
+    grants_refusal.host_grants.push(mncs_model::HostGrant {
+        capability: "clock_read".into(),
+        locator: "fixture".into(),
+        bytes: vec![1],
+    });
+    assert_eq!(
+        CallSpec::from_request(grants_refusal, None).err().unwrap(),
+        "request host grants/policy require explicit VM capability bindings"
+    );
+
+    let mut oversized = request(50, None);
+    oversized.schema_version = format!("{}x", "0.1".repeat(40));
+    assert_eq!(
+        CallSpec::from_request(oversized, None).err().unwrap(),
+        "unsupported execution request schema"
+    );
+
+    let too_many = vec![
+        ResourceLimit {
+            dimension: "steps".into(),
+            limit: 10,
+        },
+        ResourceLimit {
+            dimension: "call_depth".into(),
+            limit: 10,
+        },
+        ResourceLimit {
+            dimension: "memory_cells".into(),
+            limit: 10,
+        },
+        ResourceLimit {
+            dimension: "effects".into(),
+            limit: 10,
+        },
+        ResourceLimit {
+            dimension: "iterations".into(),
+            limit: 10,
+        },
+        ResourceLimit {
+            dimension: "steps".into(),
+            limit: 5,
+        },
+    ];
+    let too_many = ResourceEnvelope { limits: too_many };
+    assert_eq!(
+        CallSpec::from_request(request(50, None), Some(&too_many))
+            .err()
+            .unwrap(),
+        "unknown or duplicate resource dimension"
+    );
 }
 #[test]
 fn canonical_request_nested_exhaustion_is_repeatable_and_isolated() {

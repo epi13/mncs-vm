@@ -3,9 +3,9 @@
 //! This is VM-side tooling, not compiler machinery. It drives the
 //! read-only upstream pipeline (parse, compile, lower) in-process
 //! and emits the canonical VM artifact with the compiler-owned emitter.
-//! Corpus programs are self-contained (no `use` imports), so the
-//! public null resolver is sufficient and no resolution semantics
-//! are reimplemented here.
+//! Corpus programs are self-contained. Native VM-owned modules may import
+//! selected Stdlib modules through a narrow resolver rooted beside this
+//! checkout; arbitrary filesystem module search is not enabled here.
 
 use std::path::{Path, PathBuf};
 
@@ -26,10 +26,47 @@ pub enum HarnessError {
     Refused(#[from] AdmissionRefusal),
 }
 
+/// Resolves only the Stdlib modules consumed by VM-owned native programs.
+/// The explicit table keeps module identity separate from filesystem paths,
+/// and canonical-root checks prevent imports from escaping the selected
+/// toolchain checkout.
+struct VmStdlibResolver {
+    library_root: PathBuf,
+}
+
+impl VmStdlibResolver {
+    fn new() -> Self {
+        Self {
+            library_root: workspace_root().join("mncs-stdlib").join("library"),
+        }
+    }
+}
+
+impl mncs_compiler::ModuleResolver for VmStdlibResolver {
+    fn resolve(&self, module: &str) -> Option<mncs_syntax::SourceEnvelope> {
+        let relative = match module {
+            "mncs.std.text_scan.v1" => Path::new("std/text_scan.mncs"),
+            "mncs.core.bytes.v1" => Path::new("core/bytes.mncs"),
+            _ => return None,
+        };
+        let root = self.library_root.canonicalize().ok()?;
+        let path = root.join(relative).canonicalize().ok()?;
+        if !path.starts_with(&root) || !path.is_file() {
+            return None;
+        }
+        let source = std::fs::read_to_string(&path).ok()?;
+        Some(mncs_syntax::SourceEnvelope::inline(
+            mncs_syntax::SourceArtifactKind::Program,
+            module.to_owned(),
+            source,
+        ))
+    }
+}
+
 /// Compile one self-contained `.mncs` source file through the
 /// read-only upstream pipeline and admit the result into the VM.
-/// `workspace_root` locates sibling checkouts (mncs-language) only
-/// for diagnostics; compilation itself uses linked crates.
+/// `workspace_root` locates the selected Stdlib source checkout; the
+/// Language/compiler pipeline itself comes from the linked Rust crates.
 pub fn compile_file(path: &Path) -> Result<Admitted, HarnessError> {
     let source = std::fs::read_to_string(path)
         .map_err(|error| HarnessError::Unreadable(format!("{}: {error}", path.display())))?;
@@ -60,7 +97,7 @@ pub fn compile_direct_seeded(
     );
     let compiler = mncs_compiler::ReferenceCompiler::default();
     let front_end =
-        compiler.front_end_with_resolver_and_seeds(envelope, &mncs_compiler::NullResolver, seeds);
+        compiler.front_end_with_resolver_and_seeds(envelope, &VmStdlibResolver::new(), seeds);
     if !front_end.is_valid() {
         return Err(HarnessError::InvalidSource(format!(
             "{:?}",

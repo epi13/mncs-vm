@@ -105,11 +105,18 @@ fn main() {
         .and_then(Path::parent)
         .expect("VM artifact codec must be under tools/")
         .to_path_buf();
+    let stdlib_root = vm_root
+        .parent()
+        .expect("VM checkout must have a toolchain parent")
+        .join("mncs-stdlib")
+        .canonicalize()
+        .expect("resolve selected MNCS Stdlib checkout");
 
     let roots = [
         ("mncs-vm", vm_root.clone()),
         ("mncs-language", language_root.clone()),
         ("mncs-compiler", compiler_root.clone()),
+        ("mncs-stdlib", stdlib_root.clone()),
     ];
     let inputs = [
         vm_root.join("src"),
@@ -132,6 +139,8 @@ fn main() {
         compiler_root.join("Cargo.toml"),
         compiler_root.join("tools/vm-artifact-codec/src"),
         compiler_root.join("tools/vm-artifact-codec/Cargo.toml"),
+        stdlib_root.join("library/std/text_scan.mncs"),
+        stdlib_root.join("library/core/bytes.mncs"),
     ];
     let mut files = BTreeSet::new();
     for input in &inputs {

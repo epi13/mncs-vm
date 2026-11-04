@@ -13,6 +13,20 @@ use crate::evidence::ExecutionRecord;
 use crate::outcome::Outcome;
 use crate::resource::{ResourceEnvelope, ResourceLimit, ResourceUsage};
 use crate::value::{from_wire, to_wire, Value};
+use std::sync::OnceLock;
+
+const REQUEST_POLICY_ARTIFACT: &[u8] =
+    include_bytes!("../native/mncs/vm/request_policy.artifact.json");
+const REQUEST_POLICY_MODULE: &str = "mncs.vm.request_policy.v1";
+const REQUEST_POLICY_FUNCTION: &str = "resolve_request_policy";
+const MAX_NATIVE_RESOURCE_OVERRIDES: usize = 5;
+static REQUEST_POLICY_ADMITTED: OnceLock<Result<Admitted, String>> = OnceLock::new();
+
+struct NativePolicyOutput {
+    status: u64,
+    envelope: ResourceEnvelope,
+    usage: ResourceUsage,
+}
 
 /// What one call binds.
 pub struct CallSpec {
@@ -30,46 +44,34 @@ pub struct CallSpec {
 }
 
 impl CallSpec {
-    /// Bind the canonical compiler execution request to VM fuel. Request
-    /// budgets override finite VM defaults; an explicit envelope may only
-    /// tighten them. Artifact-declared bounds are still merged at execution.
-    /// VM steps count VM instructions/edges, never universal CPU cost.
+    /// Bind the canonical compiler execution request to VM fuel. MNCS owns
+    /// schema, authority, dimension, and min-merge policy; this method only
+    /// marshals the request and projects its typed result. Artifact-declared
+    /// bounds are still merged at execution. VM steps count VM
+    /// instructions/edges, never universal CPU cost.
     pub fn from_request(
         request: mncs_model::ExecutionRequest,
         override_envelope: Option<&ResourceEnvelope>,
     ) -> Result<Self, String> {
-        if request.schema_version != "0.1" {
-            return Err("unsupported execution request schema".into());
+        let policy = execute_native_request_policy(&request, override_envelope)?;
+        if policy.usage.effects != 0 {
+            return Err("native request policy attempted an effect".into());
         }
-        if !request.host_grants.is_empty()
-            || request.policy != mncs_model::ExecutionPolicy::default()
-        {
-            return Err(
-                "request host grants/policy require explicit VM capability bindings".into(),
-            );
-        }
-        let mut envelope = ResourceEnvelope::default();
-        for limit in &mut envelope.limits {
-            if limit.dimension == "steps" {
-                limit.limit = request.step_budget;
+        let envelope = match policy.status {
+            0 => policy.envelope,
+            1 => return Err("unsupported execution request schema".into()),
+            2 => {
+                return Err(
+                    "request host grants/policy require explicit VM capability bindings".into(),
+                )
             }
-            if limit.dimension == "call_depth" {
-                if let Some(depth) = request.call_depth_budget {
-                    limit.limit = depth;
-                }
+            3 => return Err("unknown or duplicate resource dimension".into()),
+            status => {
+                return Err(format!(
+                    "native request policy returned unknown status {status}"
+                ))
             }
-        }
-        if let Some(extra) = override_envelope {
-            let mut seen = std::collections::BTreeSet::new();
-            for limit in &extra.limits {
-                if !crate::admit::ENFORCED_BOUNDS.contains(&limit.dimension.as_str())
-                    || !seen.insert(&limit.dimension)
-                {
-                    return Err("unknown or duplicate resource dimension".into());
-                }
-            }
-            envelope = ResourceEnvelope::merged(&envelope.limits, &extra.limits);
-        }
+        };
         Ok(Self {
             target: CallTarget::ByName {
                 module: request.target.module,
@@ -79,6 +81,229 @@ impl CallSpec {
             type_arguments: request.type_arguments,
             envelope,
         })
+    }
+}
+
+/// Execute the policy artifact independently from the guest call. Request
+/// metadata is bounded to the ABI's fixed sequence widths before entering
+/// MNCS; lengths retain the original sizes so truncation cannot turn an
+/// invalid value into a valid one.
+fn execute_native_request_policy(
+    request: &mncs_model::ExecutionRequest,
+    override_envelope: Option<&ResourceEnvelope>,
+) -> Result<NativePolicyOutput, String> {
+    use mncs_model::{EffectExecutionPolicy, ExecutionValue, IntegerType};
+    use std::sync::Arc;
+
+    fn wire_u64(value: u64) -> ExecutionValue {
+        ExecutionValue::Integer {
+            value: i128::from(value),
+            ty: IntegerType {
+                bits: 64,
+                signed: false,
+            },
+        }
+    }
+
+    fn wire_bool(value: bool) -> ExecutionValue {
+        ExecutionValue::Boolean { value }
+    }
+
+    fn wire_bytes(value: &[u8]) -> ExecutionValue {
+        ExecutionValue::Sequence {
+            values: Arc::new(
+                value
+                    .iter()
+                    .take(64)
+                    .map(|byte| ExecutionValue::Byte {
+                        value: i128::from(*byte),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    fn wire_sequence(values: Vec<ExecutionValue>) -> ExecutionValue {
+        ExecutionValue::Sequence {
+            values: Arc::new(values),
+        }
+    }
+
+    fn result_field_u64(value: &Value, field: &str) -> Option<u64> {
+        let Value::Record { fields, .. } = value else {
+            return None;
+        };
+        let (_, value) = fields.iter().find(|(name, _)| name == field)?;
+        match value {
+            Value::Integer { value, .. } => u64::try_from(*value).ok(),
+            _ => None,
+        }
+    }
+
+    let admitted = match REQUEST_POLICY_ADMITTED.get_or_init(|| {
+        crate::admit::admit(REQUEST_POLICY_ARTIFACT)
+            .map_err(|error| format!("cannot admit native request policy: {error}"))
+    }) {
+        Ok(admitted) => admitted,
+        Err(error) => return Err(error.clone()),
+    };
+
+    let effect_policy = match &request.policy.effects {
+        EffectExecutionPolicy::Unsupported => 0,
+        EffectExecutionPolicy::Record => 1,
+        EffectExecutionPolicy::Realize => 2,
+    };
+    let extra = override_envelope
+        .map(|envelope| envelope.limits.as_slice())
+        .unwrap_or(&[]);
+    let bounded_extra = &extra[..extra.len().min(MAX_NATIVE_RESOURCE_OVERRIDES)];
+    let dimensions = wire_sequence(
+        bounded_extra
+            .iter()
+            .map(|limit| wire_bytes(limit.dimension.as_bytes()))
+            .collect(),
+    );
+    let dimension_lengths = wire_sequence(
+        bounded_extra
+            .iter()
+            .map(|limit| wire_u64(limit.dimension.len() as u64))
+            .collect(),
+    );
+    let dimension_values = wire_sequence(
+        bounded_extra
+            .iter()
+            .map(|limit| wire_u64(limit.limit))
+            .collect(),
+    );
+    let arguments = vec![
+        wire_bytes(request.schema_version.as_bytes()),
+        wire_u64(request.schema_version.len() as u64),
+        wire_bool(!request.host_grants.is_empty()),
+        wire_u64(effect_policy),
+        wire_u64(request.step_budget),
+        wire_bool(request.call_depth_budget.is_some()),
+        wire_u64(request.call_depth_budget.unwrap_or_default()),
+        wire_u64(extra.len() as u64),
+        dimensions,
+        dimension_lengths,
+        dimension_values,
+    ];
+    let capabilities = CapabilityEnv::empty();
+    let engine = Engine::new(
+        admitted,
+        ResourceEnvelope {
+            limits: vec![
+                ResourceLimit {
+                    dimension: "steps".into(),
+                    limit: 100_000,
+                },
+                ResourceLimit {
+                    dimension: "call_depth".into(),
+                    limit: 8,
+                },
+                ResourceLimit {
+                    dimension: "memory_cells".into(),
+                    limit: 100_000,
+                },
+                ResourceLimit {
+                    dimension: "effects".into(),
+                    limit: 0,
+                },
+                ResourceLimit {
+                    dimension: "iterations".into(),
+                    limit: 10_000,
+                },
+            ],
+        },
+        &capabilities,
+    )
+    .ok_or_else(|| "native request policy artifact has no executable code".to_owned())?;
+    let executed = engine.run(
+        CallTarget::ByName {
+            module: REQUEST_POLICY_MODULE.to_owned(),
+            name: REQUEST_POLICY_FUNCTION.to_owned(),
+        },
+        arguments
+            .into_iter()
+            .map(|value| from_wire(&value))
+            .collect(),
+    );
+    if !matches!(executed.outcome, Outcome::Completed) || executed.returned.len() != 1 {
+        return Err(format!(
+            "native request policy execution failed: {:?}",
+            executed.outcome
+        ));
+    }
+    let result = &executed.returned[0];
+    let field = |name: &str| {
+        result_field_u64(result, name)
+            .ok_or_else(|| format!("native request policy omitted {name}"))
+    };
+    let status = field("status")?;
+    let mut limits = vec![
+        ResourceLimit {
+            dimension: "steps".into(),
+            limit: field("steps")?,
+        },
+        ResourceLimit {
+            dimension: "call_depth".into(),
+            limit: field("call_depth")?,
+        },
+        ResourceLimit {
+            dimension: "memory_cells".into(),
+            limit: field("memory_cells")?,
+        },
+        ResourceLimit {
+            dimension: "effects".into(),
+            limit: field("effects")?,
+        },
+        ResourceLimit {
+            dimension: "iterations".into(),
+            limit: field("iterations")?,
+        },
+    ];
+    // Preserve the preexisting envelope iteration order as an API detail.
+    // An explicit override previously passed through ResourceEnvelope::merged,
+    // which sorts dimensions for a stable projected view.
+    if override_envelope.is_some() {
+        limits.sort_by(|left, right| left.dimension.cmp(&right.dimension));
+    }
+    Ok(NativePolicyOutput {
+        status,
+        envelope: ResourceEnvelope { limits },
+        usage: executed.usage,
+    })
+}
+
+#[cfg(test)]
+mod request_policy_tests {
+    use super::*;
+
+    fn request() -> mncs_model::ExecutionRequest {
+        mncs_model::ExecutionRequest {
+            schema_version: "0.1".into(),
+            target: mncs_model::ExecutionTarget {
+                module: "policy.test.v1".into(),
+                function: "unused".into(),
+            },
+            arguments: Vec::new(),
+            type_arguments: Vec::new(),
+            step_budget: 41,
+            policy: Default::default(),
+            host_grants: Vec::new(),
+            call_depth_budget: None,
+        }
+    }
+
+    #[test]
+    fn native_policy_execution_stays_within_its_bounded_workload() {
+        let execution = execute_native_request_policy(&request(), None).unwrap();
+        assert_eq!(execution.status, 0);
+        assert_eq!(execution.envelope.limit_of("steps"), Some(41));
+        assert_eq!(execution.envelope.limit_of("call_depth"), Some(1024));
+        assert!(execution.usage.steps < 100_000, "{:?}", execution.usage);
+        assert_eq!(execution.usage.effects, 0);
+        assert!(execution.usage.max_call_depth <= 8, "{:?}", execution.usage);
     }
 }
 
