@@ -1,0 +1,85 @@
+{
+  "schema_version": "mncs.vm.native-outcome-classification/1",
+  "date": "2026-11-05",
+  "campaign_id": "cmp_luna_max_native_stdlib_extension_20261104_2252z",
+  "environment_session_id": "ses_9add87c021829aeb",
+  "work_intent_id": "int_81d6668f3bc92c95",
+  "repository": "mncs-vm",
+  "implementation": {
+    "commit": "7cab19078ceeee8f51c51605e154111926e3f40b",
+    "responsibility": "Classify VM outcomes as completed or abnormal through the native MNCS request policy.",
+    "native_source": "native/mncs/vm/request_policy.mncs",
+    "native_entry_point": "is_completed_outcome",
+    "source_sha256": "a04aa5d0f37eed0269dc70e37a61c92942379a974603d04cd6f52c64fa459f5f",
+    "compiled_artifact": "native/mncs/vm/request_policy.artifact.json",
+    "artifact_id": "sha256:b378fd9187228deda4cab0937644eea376f1321fe801cd16db73dea796fcf0d3",
+    "artifact_sha256": "2f174647c36b3584cbbcb000e6a2d301c555038acc5246cbe4eecffb208cae41",
+    "production_consumers": [
+      "Engine terminal-state reporting",
+      "Debug event classification and LiveExecution termination",
+      "CLI session-failure projection",
+      "Native batch-summary outcome handling"
+    ],
+    "retired_host_responsibility": "Outcome::is_completed no longer classifies variants with a Rust matches! expression; host call sites marshal the outcome tag and surface native-policy errors."
+  },
+  "behavioral_contract": {
+    "independent_expectations": "All ten Rust Outcome variants are checked against explicit expected classifications.",
+    "unknown_tags_at_most_17_bytes": "classified abnormal",
+    "unknown_tags_over_17_bytes": "rejected explicitly",
+    "effects": 0
+  },
+  "resource_observation": {
+    "native_classifier_workload": {
+      "vm_steps": 226,
+      "call_depth": 2,
+      "max_memory_cells": 101,
+      "effects": 0
+    },
+    "admission_envelope": {
+      "max_steps": 384,
+      "max_call_depth": 4,
+      "max_memory_cells": 128,
+      "max_effects": 0,
+      "max_iterations": 16
+    }
+  },
+  "verification": {
+    "environment_capability": "mncs-vm:test/vm-tests",
+    "environment_capability_binding": "cap_50c6ead0832b2e86",
+    "full_suite": {
+      "command": "cargo test --offline",
+      "status": "passed",
+      "passed": 99,
+      "failed": 0,
+      "skipped": 0
+    },
+    "focused_native_tests": {
+      "outcome_policy_unit_tests": {"passed": 2, "failed": 0},
+      "source_artifact_identity": {"passed": 1, "failed": 0}
+    },
+    "format_and_diff_checks": "cargo fmt --all -- --check and git diff --check passed.",
+    "provider_build": {
+      "command": "python3 tools/provider.py build --executable target/debug/mncs-vm",
+      "status": "built-and-verified-locally",
+      "mismatch_count": 0,
+      "receipt_identity": "sha256:978e02ccd05b762d7699165cb4803733406bbe7ea35b3d1a713e6d1fc63ce0f4",
+      "runtime_build_identity": "8c6482ce594f8b0e38431df042338c1e24ab01e382260f095bf65007381b0248",
+      "executable_sha256": "ef46dd8dd655f080410c7ab29e4285f8a0b57840c040633f01933a45c78991ed",
+      "source_input_count": 96,
+      "source_inputs_identity": "0bcdabbb37d70d19480aeec9827f1a7ef86a57526f848e26b9f86302146c6b3f",
+      "source_revisions": {
+        "mncs-compiler": "f372a6e069805d8de6753da4b9de332749184785",
+        "mncs-language": "ce468548ead4c238f8658fa32e6e7f9bcfb2afd9",
+        "mncs-stdlib": "db7b17ddc4e5bfa98bef1350a649abdddbfc01f9",
+        "mncs-vm": "7cab19078ceeee8f51c51605e154111926e3f40b"
+      },
+      "assurance": "Local build observation; not independent attestation."
+    }
+  },
+  "delivery": {
+    "feature_branch": "campaign/luna-max-vm-native-policy-20261105",
+    "feature_commit": "7cab19078ceeee8f51c51605e154111926e3f40b",
+    "feature_branch_pushed": true,
+    "publication_method": "normal fast-forward push of the authorized campaign commit"
+  }
+}
