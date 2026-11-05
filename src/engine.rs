@@ -781,13 +781,23 @@ impl<'a> Engine<'a> {
         let Some(driver) = dbg else {
             return DriveExit::Finished(outcome);
         };
-        let suspend_armed = driver.note_terminal(&outcome);
+        let mut terminal_outcome = outcome;
+        let completed = match terminal_outcome.is_completed() {
+            Ok(completed) => completed,
+            Err(error) => {
+                terminal_outcome = Outcome::HostFailure {
+                    detail: format!("native outcome classification failed: {error}"),
+                };
+                false
+            }
+        };
+        let suspend_armed = driver.note_terminal(&terminal_outcome, completed);
         let mut reasons = driver.failure_stop_reasons();
-        if !outcome.is_completed() && suspend_armed && reasons.is_empty() {
+        if !completed && suspend_armed && reasons.is_empty() {
             reasons.push(crate::debug::StopReason::FailureOrTrap);
         }
-        if outcome.is_completed() || (!suspend_armed && reasons.is_empty()) {
-            return DriveExit::Finished(outcome);
+        if completed || (!suspend_armed && reasons.is_empty()) {
+            return DriveExit::Finished(terminal_outcome);
         }
         let depth = parts.stack.len();
         let safe_point =
@@ -797,7 +807,7 @@ impl<'a> Engine<'a> {
             safe_point,
             position: (parts.frame.seq, parts.frame.block.clone(), parts.frame.ip),
             kinds: vec!["terminal".to_owned()],
-            pending_terminal: Some(outcome),
+            pending_terminal: Some(terminal_outcome),
         }))
     }
 

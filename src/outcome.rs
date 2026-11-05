@@ -55,7 +55,12 @@ impl Outcome {
         }
     }
 
-    pub fn is_completed(&self) -> bool {
-        matches!(self, Outcome::Completed)
+    /// Classify this terminal result through the embedded MNCS outcome
+    /// policy. A policy admission or execution failure is returned to the
+    /// caller so it cannot silently change a successful result into a
+    /// guessed host classification.
+    pub fn is_completed(&self) -> Result<bool, String> {
+        crate::outcome_policy::classify_tag(self.tag())
+            .map(|classification| classification.completed)
     }
 }

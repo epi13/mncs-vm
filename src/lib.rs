@@ -21,6 +21,7 @@ pub mod engine;
 pub mod evidence;
 pub mod harness;
 pub mod outcome;
+mod outcome_policy;
 pub mod resource;
 pub mod session;
 pub mod value;

@@ -295,6 +295,13 @@ ExecutionResult
 
 The exact categories must follow actual language/runtime contracts.
 
+The completed-versus-abnormal terminal decision runs through
+`native/mncs/vm/request_policy.mncs::is_completed_outcome`. Engine terminal
+handling, Debug event selection, and CLI result projection consume that
+classification through `Outcome::is_completed`; an unknown tag remains
+abnormal. Request-envelope resolution and terminal classification share the
+same admitted policy artifact and bounded, effect-free VM execution path.
+
 ### 13. Observation and evidence
 
 The VM exposes machine-readable observations suitable for Test, Debug, Forge, Doctor, Fabric, and evidence workflows.

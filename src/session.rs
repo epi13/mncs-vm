@@ -17,10 +17,20 @@ use std::sync::OnceLock;
 
 const REQUEST_POLICY_ARTIFACT: &[u8] =
     include_bytes!("../native/mncs/vm/request_policy.artifact.json");
-const REQUEST_POLICY_MODULE: &str = "mncs.vm.request_policy.v1";
+pub(crate) const REQUEST_POLICY_MODULE: &str = "mncs.vm.request_policy.v1";
 const REQUEST_POLICY_FUNCTION: &str = "resolve_request_policy";
 const MAX_NATIVE_RESOURCE_OVERRIDES: usize = 5;
 static REQUEST_POLICY_ADMITTED: OnceLock<Result<Admitted, String>> = OnceLock::new();
+
+pub(crate) fn native_policy_artifact() -> Result<&'static Admitted, String> {
+    match REQUEST_POLICY_ADMITTED.get_or_init(|| {
+        crate::admit::admit(REQUEST_POLICY_ARTIFACT)
+            .map_err(|error| format!("cannot admit native request policy: {error}"))
+    }) {
+        Ok(admitted) => Ok(admitted),
+        Err(error) => Err(error.clone()),
+    }
+}
 
 struct NativePolicyOutput {
     status: u64,
@@ -140,13 +150,7 @@ fn execute_native_request_policy(
         }
     }
 
-    let admitted = match REQUEST_POLICY_ADMITTED.get_or_init(|| {
-        crate::admit::admit(REQUEST_POLICY_ARTIFACT)
-            .map_err(|error| format!("cannot admit native request policy: {error}"))
-    }) {
-        Ok(admitted) => admitted,
-        Err(error) => return Err(error.clone()),
-    };
+    let admitted = native_policy_artifact()?;
 
     let effect_policy = match &request.policy.effects {
         EffectExecutionPolicy::Unsupported => 0,

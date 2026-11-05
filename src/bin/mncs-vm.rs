@@ -198,7 +198,7 @@ fn cmd_serve(argv: &[String]) -> i32 {
                 "backend":"mncs-vm-direct", "steps":record.usage.steps,
                 "returned":record.returned.iter().map(mncs_vm::value::to_wire).collect::<Vec<_>>(),
                 "invoked_callable":call.callable_reference,
-                "failure_reason":if outcome.is_completed() { None } else { Some(serde_json::to_value(&outcome).unwrap()) }});
+                "failure_reason":if outcome.is_completed()? { None } else { Some(serde_json::to_value(&outcome).unwrap()) }});
             Ok(serde_json::json!({"id":call.id,"schema_version":SESSION_SCHEMA,"ok":true,"result":{"outcome":outcome,"record":record,"execution":execution}}))
         }).unwrap_or_else(|reason| serde_json::json!({"id":id,"schema_version":SESSION_SCHEMA,"ok":false,"reason":reason}));
         println!("{result}");
@@ -629,7 +629,7 @@ fn summarize_batch_chunk(
             envelope: ResourceEnvelope::default(),
         },
     );
-    if !outcome.is_completed() {
+    if !outcome.is_completed()? {
         return Err(format!("native batch summary failed: {outcome:?}"));
     }
     if record.returned.len() != 1 {

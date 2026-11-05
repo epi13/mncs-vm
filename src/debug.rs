@@ -1261,39 +1261,36 @@ impl DebugDriver {
     /// Terminal boundary: emit `failure`/`return`, unwind remaining
     /// frames with `frame_exit`, then `execution_exit`. Returns
     /// whether an abnormal terminal should suspend before finalizing.
-    pub(crate) fn note_terminal(&mut self, outcome: &Outcome) -> bool {
-        let failure_class = !outcome.is_completed();
+    pub(crate) fn note_terminal(&mut self, outcome: &Outcome, completed: bool) -> bool {
+        let failure_class = !completed;
         if self.captures_events() {
             let frame = self.frame_ids.last().cloned();
-            match outcome {
-                Outcome::Completed => {
-                    self.push_event(
-                        "return",
-                        frame.clone(),
-                        None,
-                        None,
-                        Vec::new(),
-                        Vec::new(),
-                        None,
-                        None,
-                        Some("completed".to_owned()),
-                        false,
-                    );
-                }
-                _ => {
-                    self.push_event(
-                        "failure",
-                        frame.clone(),
-                        None,
-                        None,
-                        Vec::new(),
-                        Vec::new(),
-                        None,
-                        None,
-                        Some(outcome.tag().to_owned()),
-                        true,
-                    );
-                }
+            if completed {
+                self.push_event(
+                    "return",
+                    frame.clone(),
+                    None,
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    None,
+                    Some(outcome.tag().to_owned()),
+                    false,
+                );
+            } else {
+                self.push_event(
+                    "failure",
+                    frame.clone(),
+                    None,
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    None,
+                    Some(outcome.tag().to_owned()),
+                    true,
+                );
             }
             while let Some(exiting) = self.frame_ids.pop() {
                 self.push_event(
@@ -1688,7 +1685,7 @@ impl<'a> LiveExecution<'a> {
         if self.finished {
             return Err(DebugError::AlreadyFinished);
         }
-        let outcome = self
+        let mut outcome = self
             .pending_terminal
             .clone()
             .unwrap_or(Outcome::Terminated {
@@ -1697,7 +1694,16 @@ impl<'a> LiveExecution<'a> {
         // A mid-run terminate still closes the observation stream
         // honestly: the terminal hook runs once for event closure.
         if self.pending_terminal.is_none() {
-            self.driver.note_terminal(&outcome);
+            let completed = match outcome.is_completed() {
+                Ok(completed) => completed,
+                Err(error) => {
+                    outcome = Outcome::HostFailure {
+                        detail: format!("native outcome classification failed: {error}"),
+                    };
+                    false
+                }
+            };
+            self.driver.note_terminal(&outcome, completed);
         }
         Ok(self.finish(outcome))
     }
