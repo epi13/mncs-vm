@@ -1,0 +1,81 @@
+{
+  "schema_version": "mncs.vm.native-call-resolution/1",
+  "date": "2026-11-05",
+  "campaign_id": "cmp_luna_max_native_ecosystem_20261105_0400z",
+  "environment_session_id": "ses_0cac5961905bc646",
+  "work_intent_id": "int_81d6668f3bc92c95",
+  "repository": "mncs-vm",
+  "implementation": {
+    "responsibility": "Resolve request call targets and exact generic instantiations through MNCS policy.",
+    "native_source": "native/mncs/vm/request_policy.mncs",
+    "native_entry_point": "resolve_call_policy",
+    "source_sha256": "590a862f05690172f173bff33e4bafa93690320560f2c9c5c32a5159eb5ebd49",
+    "compiled_artifact": "native/mncs/vm/request_policy.artifact.json",
+    "artifact_id": "sha256:74d3193e7902ea915385c6edfafb3ec570f84bab0d1804f884818b33dc6231e1",
+    "artifact_sha256": "f7b18dc20de8243c733ef25e308072f1f4a38cb10d4e8f71fd5685717db4626f",
+    "consumers": [
+      "VM CallSpec request resolution",
+      "VM generic-entrypoint selection"
+    ],
+    "retired_host_responsibility": "Removed Rust's exact generic-specialization key map and its route/refusal decision tree. Rust keeps artifact indexes, passes Language-normalized spellings and candidate rows to MNCS, maps the native result to an admitted artifact entry, and formats diagnostics."
+  },
+  "behavioral_contract": {
+    "independent_expectations": "Ten explicit Rust test cases verify concrete selection, generic selection, exact specialization matching, and each request refusal class.",
+    "source_artifact_identity": "The admitted embedded artifact must match the native source and expose resolve_call_policy.",
+    "language_boundary": "Language remains the authority for normalized type-argument spelling.",
+    "bounded_input": {
+      "max_generic_candidates": 1024,
+      "max_encoded_argument_packet_bytes": 1024,
+      "candidate_order": "admitted artifact order"
+    },
+    "effects": 0
+  },
+  "resource_envelope": {
+    "max_steps": 5000000,
+    "max_call_depth": 8,
+    "max_memory_cells": 2000000,
+    "max_iterations": 2000000,
+    "max_effects": 0
+  },
+  "verification": {
+    "native_toolchain": "mncs-vm compile and admit",
+    "source_artifact_compile_admit": {
+      "status": "passed",
+      "compile_command": "/home/epi13/Documents/Projects/mncs-vm/target/debug/mncs-vm compile native/mncs/vm/request_policy.mncs --output /tmp/mncs-vm-request-policy-20261105.json",
+      "admission_command": "/home/epi13/Documents/Projects/mncs-vm/target/debug/mncs-vm admit --artifact native/mncs/vm/request_policy.artifact.json",
+      "artifact_id": "sha256:74d3193e7902ea915385c6edfafb3ec570f84bab0d1804f884818b33dc6231e1"
+    },
+    "full_suite": {
+      "command": "cargo test --offline",
+      "status": "passed",
+      "passed": 101,
+      "failed": 0,
+      "skipped": 0
+    },
+    "focused_contracts": {
+      "native_route_and_refusal_cases": {
+        "passed": 10,
+        "failed": 0
+      },
+      "policy_resource_envelope_assertions": {
+        "passed": 10,
+        "failed": 0
+      },
+      "embedded_source_artifact_identity": {
+        "passed": 1,
+        "failed": 0
+      },
+      "generic_end_to_end_contracts": {
+        "passed": 5,
+        "failed": 0
+      }
+    },
+    "format_and_diff_checks": "cargo fmt --all -- --check and git diff --check passed."
+  },
+  "source_revisions": {
+    "mncs-vm_base": "db576a583d54bf7063223e0e4aea59bab229fdd0",
+    "mncs-language": "22e8af28f492cd86f100dad58522595f90d5a753",
+    "mncs-compiler": "f372a6e069805d8de6753da4b9de332749184785",
+    "mncs-stdlib": "6059627d9ac3b0fd7b8fb1a7e2b581e4497812ab"
+  }
+}

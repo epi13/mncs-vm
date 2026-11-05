@@ -1,8 +1,9 @@
 mncs 0.18;
 
 // The VM's runtime policy boundary delegates request validation, resource
-// resolution, and terminal-outcome classification to this bounded native
-// reducer. Host code marshals fixed-width values and projects typed results.
+// resolution, call-target selection, and terminal-outcome classification to
+// this bounded native reducer. Host code marshals fixed-width values and
+// projects typed results.
 module mncs.vm.request_policy.v1;
 
 use mncs.std.text_scan.v1 as text_scan;
@@ -19,6 +20,17 @@ record PolicyState {
     seen_memory_cells: bool,
     seen_effects: bool,
     seen_iterations: bool
+}
+
+record CallResolutionState {
+    valid: bool,
+    found: bool,
+    index: u64
+}
+
+record CallResolutionDecision {
+    status: u64,
+    index: u64
 }
 
 fn tighter(current: u64, requested: u64) -> (result: u64) {
@@ -170,4 +182,142 @@ fn resolve_request_policy(
 fn is_completed_outcome(kind: [byte; up_to 64], kind_length: u64) -> (result: bool) {
     let completed: [byte; 9] = [99, 111, 109, 112, 108, 101, 116, 101, 100];
     return text_scan.equals(kind, kind_length, completed, 9);
+}
+
+// Type arguments are passed as an unambiguous length-prefixed byte packet.
+// Language owns spelling normalization; the VM policy compares the frozen
+// request projection with compiler-emitted instantiation rows.
+fn packet_equal(
+    left: [byte; up_to 1024],
+    left_length: u64,
+    right: [byte; up_to 1024],
+    right_length: u64
+) -> (result: bool) {
+    if left_length != right_length
+        || left_length != left.len
+        || right_length != right.len {
+        return false;
+    }
+    iterate i over left carrying same: bool = true {
+        next same = same && left[i] == right[i];
+    }
+    return same;
+}
+
+fn consider_generic_entry(
+    state: CallResolutionState,
+    requested: [byte; up_to 1024],
+    requested_length: u64,
+    candidate: [byte; up_to 1024],
+    candidate_length: u64,
+    candidate_index: u64
+) -> (result: CallResolutionState) {
+    if !state.valid || state.found {
+        return state;
+    }
+    if candidate_length != candidate.len {
+        return CallResolutionState { ..state, valid: false };
+    }
+    if packet_equal(requested, requested_length, candidate, candidate_length) {
+        return CallResolutionState { ..state, found: true, index: candidate_index };
+    }
+    return state;
+}
+
+fn find_generic_entry(
+    requested: [byte; up_to 1024],
+    requested_length: u64,
+    candidate_packets: [[byte; up_to 1024]; up_to 1024],
+    candidate_lengths: [u64; up_to 1024],
+    candidate_count: u64
+) -> (result: CallResolutionState) {
+    let initial: CallResolutionState = CallResolutionState {
+        valid: true,
+        found: false,
+        index: 0
+    };
+    if candidate_count != candidate_packets.len
+        || candidate_count != candidate_lengths.len
+        || requested_length != requested.len {
+        return CallResolutionState { ..initial, valid: false };
+    }
+    iterate i over candidate_packets carrying state: CallResolutionState = initial {
+        next state = consider_generic_entry(
+            state,
+            requested,
+            requested_length,
+            candidate_packets[i],
+            candidate_lengths[i],
+            i
+        );
+    }
+    return state;
+}
+
+// status: 0 concrete, 1 generic, 2 type arguments on function identity,
+// 3 missing generic arguments, 4 unknown callable, 5 arguments on a concrete
+// named callable, 6 no realized generic entry, 7 no matching specialization,
+// 8 invalid bounded policy input.
+fn resolve_call_policy(
+    target_kind: u64,
+    has_type_arguments: bool,
+    concrete_present: bool,
+    concrete_index: u64,
+    requested: [byte; up_to 1024],
+    requested_length: u64,
+    candidate_packets: [[byte; up_to 1024]; up_to 1024],
+    candidate_lengths: [u64; up_to 1024],
+    candidate_count: u64
+) -> (result: CallResolutionDecision) {
+    let invalid: CallResolutionDecision = CallResolutionDecision {
+        status: 8,
+        index: 0
+    };
+    if candidate_count > 1024
+        || candidate_count != candidate_packets.len
+        || candidate_count != candidate_lengths.len
+        || requested_length != requested.len {
+        return invalid;
+    }
+    if target_kind == 0 {
+        if has_type_arguments {
+            return CallResolutionDecision { ..invalid, status: 2 };
+        }
+        if concrete_present {
+            return CallResolutionDecision { status: 0, index: concrete_index };
+        }
+        return CallResolutionDecision { ..invalid, status: 4 };
+    }
+    if target_kind != 1 {
+        return invalid;
+    }
+    if !has_type_arguments {
+        if concrete_present {
+            return CallResolutionDecision { status: 0, index: concrete_index };
+        }
+        if candidate_count > 0 {
+            return CallResolutionDecision { ..invalid, status: 3 };
+        }
+        return CallResolutionDecision { ..invalid, status: 4 };
+    }
+    if concrete_present {
+        return CallResolutionDecision { ..invalid, status: 5 };
+    }
+    let candidate_result: CallResolutionState = find_generic_entry(
+        requested,
+        requested_length,
+        candidate_packets,
+        candidate_lengths,
+        candidate_count
+    );
+    if !candidate_result.valid {
+        return invalid;
+    }
+    if candidate_result.found {
+        return CallResolutionDecision { status: 1, index: candidate_result.index };
+    }
+    if candidate_count == 0 {
+        return CallResolutionDecision { ..invalid, status: 6 };
+    }
+    return CallResolutionDecision { ..invalid, status: 7 };
 }

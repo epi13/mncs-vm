@@ -56,9 +56,10 @@ pub struct Admitted {
     pub by_function: BTreeMap<String, usize>,
     /// SSA function index by function identity.
     pub ssa_functions: BTreeMap<String, usize>,
-    /// (generic module, generic name, normalized spellings) ->
-    /// generic-entrypoint index. Generic calls bind here.
-    pub generic_entries: BTreeMap<(String, String, Vec<String>), usize>,
+    /// (generic module, generic name) -> artifact-ordered generic-entrypoint
+    /// indexes. Native call policy matches normalized spellings within this
+    /// indexed row set.
+    pub generic_by_name: BTreeMap<(String, String), Vec<usize>>,
     /// Immutable code routing built once at admission, shared by every call.
     pub(crate) execution_functions: BTreeMap<String, usize>,
     pub(crate) execution_blocks: Vec<BTreeMap<String, usize>>,
@@ -81,32 +82,30 @@ impl Admitted {
         self.by_function.get(function).copied()
     }
 
-    pub fn generic_entry(&self, module: &str, name: &str, spellings: &[String]) -> Option<usize> {
-        self.generic_entries
-            .get(&(module.to_owned(), name.to_owned(), spellings.to_vec()))
-            .copied()
+    pub fn generic_entry_indices(&self, module: &str, name: &str) -> &[usize] {
+        self.generic_by_name
+            .get(&(module.to_owned(), name.to_owned()))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// Whether the artifact realizes any instantiation of a generic
     /// function, for precise call-boundary refusals.
     pub fn has_generic(&self, module: &str, name: &str) -> bool {
-        self.generic_entries
-            .keys()
-            .any(|(generic_module, generic_function, _)| {
-                generic_module == module && generic_function == name
-            })
+        !self.generic_entry_indices(module, name).is_empty()
     }
 
     /// Normalized spellings of every realized instantiation of a
     /// generic function, for refusal diagnostics.
     pub fn generic_spellings(&self, module: &str, name: &str) -> Vec<Vec<String>> {
         let mut spellings: Vec<Vec<String>> = self
-            .generic_entries
-            .keys()
-            .filter(|(generic_module, generic_function, _)| {
-                generic_module == module && generic_function == name
+            .generic_entry_indices(module, name)
+            .iter()
+            .map(|index| {
+                self.artifact.generic_entrypoints[*index]
+                    .args_spellings
+                    .clone()
             })
-            .map(|(_, _, row)| row.clone())
             .collect();
         spellings.sort();
         spellings
@@ -297,7 +296,7 @@ pub fn admit_artifact(artifact: VmArtifact) -> Result<Admitted, AdmissionRefusal
         }
         by_name.insert((callable.module.clone(), callable.name.clone()), index);
     }
-    let mut generic_entries = BTreeMap::new();
+    let mut generic_by_name: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
     for (index, entry) in artifact.generic_entrypoints.iter().enumerate() {
         if entry.generic_module.trim().is_empty() || entry.generic_function.trim().is_empty() {
             return Err(AdmissionRefusal::Malformed {
@@ -341,17 +340,12 @@ pub fn admit_artifact(artifact: VmArtifact) -> Result<Admitted, AdmissionRefusal
                 ),
             });
         }
-        if generic_entries
-            .insert(
-                (
-                    entry.generic_module.clone(),
-                    entry.generic_function.clone(),
-                    entry.args_spellings.clone(),
-                ),
-                index,
-            )
-            .is_some()
-        {
+        let candidates = generic_by_name
+            .entry((entry.generic_module.clone(), entry.generic_function.clone()))
+            .or_default();
+        if candidates.iter().any(|candidate_index| {
+            artifact.generic_entrypoints[*candidate_index].args_spellings == entry.args_spellings
+        }) {
             return Err(AdmissionRefusal::Malformed {
                 reason: format!(
                     "duplicate generic entrypoint {}::{}({})",
@@ -361,6 +355,7 @@ pub fn admit_artifact(artifact: VmArtifact) -> Result<Admitted, AdmissionRefusal
                 ),
             });
         }
+        candidates.push(index);
     }
     let mut execution_functions = BTreeMap::new();
     let mut execution_blocks = Vec::with_capacity(ssa.functions.len());
@@ -406,7 +401,7 @@ pub fn admit_artifact(artifact: VmArtifact) -> Result<Admitted, AdmissionRefusal
         by_name,
         by_function,
         ssa_functions,
-        generic_entries,
+        generic_by_name,
         execution_functions,
         execution_blocks,
         execution_nested_iterations,

@@ -7,6 +7,7 @@
 //! no hidden defaults: everything a run may observe is an argument.
 
 use crate::admit::Admitted;
+use crate::call_resolution_policy;
 use crate::capability::CapabilityEnv;
 use crate::engine::{CallTarget, Engine, EngineResult};
 use crate::evidence::ExecutionRecord;
@@ -318,96 +319,134 @@ struct ResolvedCall {
     name: String,
 }
 
-/// Resolve a call target plus explicit type arguments to one frozen
-/// function identity. Pure table lookup over admitted content:
-///
-/// - concrete targets with no arguments bind the callable table;
-/// - generic targets with arguments bind the entrypoint row whose
-///   normalized spellings match exactly;
-/// - everything else is an explicit refusal reason, never a guess.
-///
-/// Normalization reuses the upstream
-/// `mncs_model::ExecutionTypeArgument::normalized_spelling` so VM
-/// resolution agrees byte-for-byte with backend-session resolution.
+/// Bind the native policy's selection to one frozen artifact row. Language
+/// owns type spelling normalization, the admitted indexes provide candidate
+/// rows, and MNCS decides the concrete/generic route and exact specialization.
 fn resolve_call(
     admitted: &Admitted,
     target: &CallTarget,
     type_arguments: &[mncs_model::ExecutionTypeArgument],
 ) -> Result<ResolvedCall, String> {
-    match target {
-        CallTarget::ByFunction { function } => {
-            if !type_arguments.is_empty() {
-                return Err(format!(
-                    "type arguments supplied for concrete function target {function:?}"
-                ));
-            }
-            match admitted.callable_by_function(function) {
-                Some(index) => {
-                    let entry = &admitted.artifact.callables[index];
-                    Ok(ResolvedCall {
-                        function: entry.function.clone(),
-                        name: format!("{}::{}", entry.module, entry.name),
-                    })
-                }
-                None => Err("unknown callable".to_owned()),
-            }
+    let (target_kind, concrete_index, candidate_indices, module_name) = match target {
+        CallTarget::ByFunction { function } => (
+            call_resolution_policy::TARGET_FUNCTION,
+            admitted.callable_by_function(function),
+            Vec::new(),
+            None,
+        ),
+        CallTarget::ByName { module, name } => (
+            call_resolution_policy::TARGET_NAME,
+            admitted.callable_by_name(module, name),
+            admitted.generic_entry_indices(module, name).to_vec(),
+            Some((module.as_str(), name.as_str())),
+        ),
+    };
+    let spellings: Vec<String> = if target_kind == call_resolution_policy::TARGET_NAME {
+        type_arguments
+            .iter()
+            .map(mncs_model::ExecutionTypeArgument::normalized_spelling)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let candidate_spellings =
+        call_resolution_policy::candidate_spellings(admitted, &candidate_indices);
+    let decision = call_resolution_policy::select(
+        target_kind,
+        !type_arguments.is_empty(),
+        concrete_index,
+        &spellings,
+        &candidate_spellings,
+    )?;
+
+    match decision.status {
+        call_resolution_policy::SELECT_CONCRETE => {
+            let index = concrete_index.ok_or_else(|| {
+                "native call-resolution policy selected an absent concrete callable".to_owned()
+            })?;
+            let entry = admitted
+                .artifact
+                .callables
+                .get(index)
+                .ok_or_else(|| "native call-resolution concrete index is out of range".to_owned())?;
+            Ok(ResolvedCall {
+                function: entry.function.clone(),
+                name: format!("{}::{}", entry.module, entry.name),
+            })
         }
-        CallTarget::ByName { module, name } => {
-            if type_arguments.is_empty() {
-                return match admitted.callable_by_name(module, name) {
-                    Some(index) => {
-                        let entry = &admitted.artifact.callables[index];
-                        Ok(ResolvedCall {
-                            function: entry.function.clone(),
-                            name: format!("{}::{}", entry.module, entry.name),
-                        })
-                    }
-                    None if admitted.has_generic(module, name) => Err(format!(
-                        "generic function {module}::{name} requires explicit type_arguments selecting a compiled instantiation"
-                    )),
-                    None => Err("unknown callable".to_owned()),
-                };
-            }
-            if admitted.callable_by_name(module, name).is_some() {
-                return Err(format!(
-                    "generic arguments supplied for non-generic function {module}::{name}"
-                ));
-            }
-            let spellings: Vec<String> = type_arguments
-                .iter()
-                .map(|argument| argument.normalized_spelling())
-                .collect();
-            match admitted.generic_entry(module, name, &spellings) {
-                Some(index) => {
-                    let entry = &admitted.artifact.generic_entrypoints[index];
-                    Ok(ResolvedCall {
-                        function: entry.function.clone(),
-                        name: format!(
-                            "{}::{}<{}>",
-                            entry.generic_module, entry.generic_function, entry.canonical_args
-                        ),
-                    })
-                }
-                None => {
-                    let available = admitted.generic_spellings(module, name);
-                    if available.is_empty() {
-                        Err(format!(
-                            "no compiled generic instantiation of {module}::{name} matches this artifact: name the instantiation in the corpus so elaboration compiles it in"
-                        ))
-                    } else {
-                        let rendered: Vec<String> = available
-                            .iter()
-                            .map(|row| format!("({})", row.join(", ")))
-                            .collect();
-                        Err(format!(
-                            "no compiled specialization of generic function {module}::{name} for arguments ({}); compiled instantiations: [{}]",
-                            spellings.join(", "),
-                            rendered.join(", ")
-                        ))
-                    }
-                }
-            }
+        call_resolution_policy::SELECT_GENERIC => {
+            let artifact_index = *candidate_indices.get(decision.index).ok_or_else(|| {
+                "native call-resolution generic index is out of range".to_owned()
+            })?;
+            let entry = admitted
+                .artifact
+                .generic_entrypoints
+                .get(artifact_index)
+                .ok_or_else(|| "native call-resolution artifact row is out of range".to_owned())?;
+            Ok(ResolvedCall {
+                function: entry.function.clone(),
+                name: format!(
+                    "{}::{}<{}>",
+                    entry.generic_module, entry.generic_function, entry.canonical_args
+                ),
+            })
         }
+        call_resolution_policy::REFUSE_FUNCTION_TYPE_ARGUMENTS => match target {
+            CallTarget::ByFunction { function } => Err(format!(
+                "type arguments supplied for concrete function target {function:?}"
+            )),
+            CallTarget::ByName { .. } => Err(
+                "native call-resolution policy returned a function-target refusal for a named target".to_owned(),
+            ),
+        },
+        call_resolution_policy::REFUSE_MISSING_GENERIC_ARGUMENTS => match module_name {
+            Some((module, name)) => Err(format!(
+                "generic function {module}::{name} requires explicit type_arguments selecting a compiled instantiation"
+            )),
+            None => Err(
+                "native call-resolution policy returned a generic-argument refusal without a named target".to_owned(),
+            ),
+        },
+        call_resolution_policy::REFUSE_UNKNOWN_CALLABLE => Err("unknown callable".to_owned()),
+        call_resolution_policy::REFUSE_TYPE_ARGUMENTS_FOR_CONCRETE => match module_name {
+            Some((module, name)) => Err(format!(
+                "generic arguments supplied for non-generic function {module}::{name}"
+            )),
+            None => Err(
+                "native call-resolution policy returned a named-target refusal for a function identity".to_owned(),
+            ),
+        },
+        call_resolution_policy::REFUSE_NO_GENERIC_INSTANTIATION => match module_name {
+            Some((module, name)) => Err(format!(
+                "no compiled generic instantiation of {module}::{name} matches this artifact: name the instantiation in the corpus so elaboration compiles it in"
+            )),
+            None => Err(
+                "native call-resolution policy returned an instantiation refusal without a named target".to_owned(),
+            ),
+        },
+        call_resolution_policy::REFUSE_NO_MATCHING_SPECIALIZATION => match module_name {
+            Some((module, name)) => {
+                let available = admitted.generic_spellings(module, name);
+                let rendered: Vec<String> = available
+                    .iter()
+                    .map(|row| format!("({})", row.join(", ")))
+                    .collect();
+                Err(format!(
+                    "no compiled specialization of generic function {module}::{name} for arguments ({}); compiled instantiations: [{}]",
+                    spellings.join(", "),
+                    rendered.join(", ")
+                ))
+            }
+            None => Err(
+                "native call-resolution policy returned a specialization refusal without a named target".to_owned(),
+            ),
+        },
+        call_resolution_policy::REFUSE_INVALID_INPUT => Err(
+            "native call-resolution policy rejected inconsistent bounded artifact/request data".to_owned(),
+        ),
+        status => Err(format!(
+            "native call-resolution policy returned unknown status {status}"
+        )),
     }
 }
 

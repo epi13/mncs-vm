@@ -316,6 +316,15 @@ also tighten limits. Duplicate/unknown override dimensions are refused.
 Host grants and non-default execution policies require explicit VM capability
 bindings and are refused by this batch adapter. No authority is inferred.
 
+Concrete-versus-generic routing and exact generic-instantiation selection run
+in `native/mncs/vm/request_policy.mncs::resolve_call_policy`. The Rust adapter
+marshals the VM's concrete candidate and the admitted, name-indexed generic
+candidate rows, then projects the native decision back to artifact indices.
+Type-argument normalization remains owned by Language; the VM preserves its
+normalized spellings when forming bounded policy input. Rust retains diagnostic
+presentation and artifact indexing, while route and refusal classification
+are decided by the shared MNCS policy artifact.
+
 Batch outcome counts and resource aggregates are reduced by the compiled
 MNCS module in `native/mncs/vm/batch_summary.mncs`. The Rust adapter transports
 at most 64 outcome/usage observations per native call, then projects the typed

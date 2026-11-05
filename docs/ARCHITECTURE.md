@@ -302,6 +302,12 @@ classification through `Outcome::is_completed`; an unknown tag remains
 abnormal. Request-envelope resolution and terminal classification share the
 same admitted policy artifact and bounded, effect-free VM execution path.
 
+The same policy artifact owns request call routing through
+`resolve_call_policy`: it distinguishes concrete targets from generic
+instantiations, matches Language-normalized type-argument spellings against
+admitted candidate rows, and classifies route refusals. VM code retains its
+artifact indexes and maps the native decision back to the selected entry.
+
 ### 13. Observation and evidence
 
 The VM exposes machine-readable observations suitable for Test, Debug, Forge, Doctor, Fabric, and evidence workflows.

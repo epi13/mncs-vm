@@ -15,6 +15,7 @@
 
 pub mod admit;
 pub mod artifact;
+mod call_resolution_policy;
 pub mod capability;
 pub mod debug;
 pub mod engine;
