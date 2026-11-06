@@ -34,16 +34,10 @@ pub enum AdmissionRefusal {
     /// Content identity does not match sealed `artifact_id`.
     #[error("artifact identity mismatch")]
     IdentityMismatch,
+    /// The VM's embedded native admission policy could not be evaluated.
+    #[error("native admission policy failure: {detail}")]
+    PolicyFailure { detail: String },
 }
-
-/// Resource dimensions the v1 engine enforces.
-pub const ENFORCED_BOUNDS: &[&str] = &[
-    "steps",
-    "call_depth",
-    "memory_cells",
-    "effects",
-    "iterations",
-];
 
 /// An admitted artifact: frozen content plus resolved indexes.
 /// The engine executes from this, never from raw bytes.
@@ -121,7 +115,9 @@ impl Admitted {
     }
 }
 
-/// Admit frozen artifact bytes. Pure: no execution, no providers.
+/// Admit frozen artifact bytes without executing guest code or invoking
+/// providers. The embedded, effect-free MNCS policy runs before structural
+/// indexes are constructed.
 ///
 /// Parses in two steps (text to `Value`, then typed): the JSON text
 /// parser cannot target 128-bit integers without an extra
@@ -165,39 +161,65 @@ fn decode_artifact(bytes: &[u8]) -> Result<VmArtifact, AdmissionRefusal> {
 
 /// Admit an already-parsed artifact value.
 pub fn admit_artifact(artifact: VmArtifact) -> Result<Admitted, AdmissionRefusal> {
+    crate::admission_policy::check_artifact_schema(&artifact.schema_version)?;
+    if !artifact.identity_is_valid() {
+        return Err(AdmissionRefusal::IdentityMismatch);
+    }
+    crate::admission_policy::check_vm_contract(&artifact.requirements.vm_contract)?;
+    crate::admission_policy::check_bounds(&artifact.requirements.bounds)?;
+    let ssa_schema = match &artifact.code {
+        CodeSection::MncsSelectedSsa { ssa_schema, .. } => ssa_schema,
+    };
+    crate::admission_policy::check_ssa_schema(ssa_schema)?;
+    admit_after_compatibility(artifact)
+}
+
+/// Admit the one embedded policy artifact without invoking that same
+/// policy recursively. This deliberately small host bootstrap accepts only
+/// the VM's fixed artifact/contract/SSA revisions and a policy artifact with
+/// no declared resource bounds. Guest artifacts always use MNCS admission.
+pub(crate) fn admit_policy_artifact(bytes: &[u8]) -> Result<Admitted, AdmissionRefusal> {
+    let artifact = decode_artifact(bytes)?;
     if artifact.schema_version != ARTIFACT_SCHEMA_VERSION {
-        return Err(AdmissionRefusal::IncompatibleContract {
+        return Err(AdmissionRefusal::PolicyFailure {
             detail: format!(
-                "artifact schema {} != {}",
-                artifact.schema_version, ARTIFACT_SCHEMA_VERSION
+                "embedded policy artifact schema is {}",
+                artifact.schema_version
             ),
         });
     }
     if !artifact.identity_is_valid() {
-        return Err(AdmissionRefusal::IdentityMismatch);
+        return Err(AdmissionRefusal::PolicyFailure {
+            detail: "embedded policy artifact identity is invalid".to_owned(),
+        });
     }
     if artifact.requirements.vm_contract != VM_CONTRACT {
-        return Err(AdmissionRefusal::IncompatibleContract {
+        return Err(AdmissionRefusal::PolicyFailure {
             detail: format!(
-                "vm contract {} != {}",
-                artifact.requirements.vm_contract, VM_CONTRACT
+                "embedded policy artifact targets VM contract {}",
+                artifact.requirements.vm_contract
             ),
         });
     }
-    for bound in &artifact.requirements.bounds {
-        if !ENFORCED_BOUNDS.contains(&bound.dimension.as_str()) {
-            return Err(AdmissionRefusal::UnsupportedFeature {
-                feature: format!("bound-dimension:{}", bound.dimension),
-            });
-        }
+    if !artifact.requirements.bounds.is_empty() {
+        return Err(AdmissionRefusal::PolicyFailure {
+            detail: "embedded policy artifact declares resource bounds".to_owned(),
+        });
     }
+    let ssa_schema = match &artifact.code {
+        CodeSection::MncsSelectedSsa { ssa_schema, .. } => ssa_schema,
+    };
+    if !ACCEPTED_SSA_SCHEMAS.contains(&ssa_schema.as_str()) {
+        return Err(AdmissionRefusal::PolicyFailure {
+            detail: format!("embedded policy artifact uses SSA schema {ssa_schema}"),
+        });
+    }
+    admit_after_compatibility(artifact)
+}
+
+fn admit_after_compatibility(artifact: VmArtifact) -> Result<Admitted, AdmissionRefusal> {
     let ssa = match &artifact.code {
-        CodeSection::MncsSelectedSsa { ssa_schema, module } => {
-            if !ACCEPTED_SSA_SCHEMAS.contains(&ssa_schema.as_str()) {
-                return Err(AdmissionRefusal::UnsupportedFeature {
-                    feature: format!("ssa-schema:{ssa_schema}"),
-                });
-            }
+        CodeSection::MncsSelectedSsa { module, .. } => {
             if !module.identity_is_valid() {
                 return Err(AdmissionRefusal::UnresolvedFact {
                     fact: "ssa module identity is invalid".to_owned(),

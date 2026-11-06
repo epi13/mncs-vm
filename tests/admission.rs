@@ -51,6 +51,38 @@ fn schema_drift_is_incompatible() {
 }
 
 #[test]
+fn schema_refusal_keeps_precedence_over_identity() {
+    let mut artifact = round_trip().artifact;
+    artifact.schema_version = "mncs.vm.artifact/999".to_owned();
+    let refusal = admit_artifact(artifact).unwrap_err();
+    assert!(
+        matches!(
+            refusal,
+            mncs_vm::admit::AdmissionRefusal::IncompatibleContract { .. }
+        ),
+        "{refusal:?}"
+    );
+}
+
+#[test]
+fn vm_contract_drift_is_incompatible_before_bound_checks() {
+    let mut artifact = round_trip().artifact;
+    artifact.requirements.vm_contract = "mncs.vm/999".to_owned();
+    artifact.requirements.bounds.push(BoundDecl {
+        dimension: "hyperdrive".to_owned(),
+        limit: 3,
+    });
+    let refusal = admit_artifact(artifact.seal()).unwrap_err();
+    assert!(
+        matches!(
+            refusal,
+            mncs_vm::admit::AdmissionRefusal::IncompatibleContract { .. }
+        ),
+        "{refusal:?}"
+    );
+}
+
+#[test]
 fn tampered_identity_is_rejected() {
     let admitted = compile_corpus("arith.mncs");
     let mut artifact = admitted.artifact.clone();
@@ -80,6 +112,82 @@ fn unknown_bound_dimension_is_unsupported() {
         ),
         "{refusal:?}"
     );
+}
+
+#[test]
+fn bounds_stream_in_order_past_one_native_packet() {
+    let mut artifact = round_trip().artifact;
+    artifact.requirements.bounds = (0..20)
+        .map(|_| BoundDecl {
+            dimension: "steps".to_owned(),
+            limit: 3,
+        })
+        .collect();
+    artifact.requirements.bounds.push(BoundDecl {
+        dimension: "hyperdrive".to_owned(),
+        limit: 3,
+    });
+    let refusal = admit_artifact(artifact.seal()).unwrap_err();
+    assert!(
+        matches!(
+            refusal,
+            mncs_vm::admit::AdmissionRefusal::UnsupportedFeature { ref feature }
+                if feature == "bound-dimension:hyperdrive"
+        ),
+        "{refusal:?}"
+    );
+}
+
+#[test]
+fn long_bound_dimension_is_refused_without_truncating_diagnostic() {
+    let mut artifact = round_trip().artifact;
+    let dimension = "x".repeat(80);
+    artifact.requirements.bounds.push(BoundDecl {
+        dimension: dimension.clone(),
+        limit: 3,
+    });
+    let refusal = admit_artifact(artifact.seal()).unwrap_err();
+    assert!(
+        matches!(
+            refusal,
+            mncs_vm::admit::AdmissionRefusal::UnsupportedFeature { ref feature }
+                if feature == &format!("bound-dimension:{dimension}")
+        ),
+        "{refusal:?}"
+    );
+}
+
+#[test]
+fn ssa_schema_is_native_classified_after_bounds() {
+    let mut artifact = round_trip().artifact;
+    let CodeSection::MncsSelectedSsa { ssa_schema, .. } = &mut artifact.code;
+    *ssa_schema = "0.99".to_owned();
+    artifact = artifact.seal();
+    let refusal = admit_artifact(artifact).unwrap_err();
+    assert!(
+        matches!(
+            refusal,
+            mncs_vm::admit::AdmissionRefusal::UnsupportedFeature { ref feature }
+                if feature == "ssa-schema:0.99"
+        ),
+        "{refusal:?}"
+    );
+}
+
+#[test]
+fn both_declared_ssa_schemas_remain_admissible() {
+    for schema in ["0.5", "0.6"] {
+        let mut artifact = round_trip().artifact;
+        let CodeSection::MncsSelectedSsa { ssa_schema, .. } = &mut artifact.code;
+        *ssa_schema = schema.to_owned();
+        let admitted = admit_artifact(artifact.seal()).expect("declared SSA schema accepted");
+        assert_eq!(
+            match &admitted.artifact.code {
+                CodeSection::MncsSelectedSsa { ssa_schema, .. } => ssa_schema,
+            },
+            schema
+        );
+    }
 }
 
 #[test]

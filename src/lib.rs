@@ -13,6 +13,7 @@
 //! Development harnesses use the compiler-owned direct emitter; no research
 //! artifact conversion remains in this crate.
 
+mod admission_policy;
 pub mod admit;
 pub mod artifact;
 mod call_resolution_policy;

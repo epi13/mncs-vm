@@ -90,6 +90,31 @@ pub fn compile_direct_seeded(
     locator: &str,
     seeds: &[mncs_model::HostGenericSeedRequest],
 ) -> Result<(mncs_model::Program, Admitted), HarnessError> {
+    let (program, artifact) = compile_source_artifact_seeded(source, locator, seeds)?;
+    let bytes = serde_json::to_vec(&artifact).expect("direct artifact serializes");
+    let admitted = crate::admit::admit(&bytes)?;
+    Ok((program, admitted))
+}
+
+/// Compile inline source to a frozen VM artifact without admitting it.
+///
+/// This narrow bootstrap hook lets checked-in MNCS policy artifacts be
+/// regenerated before their updated policy can admit itself. Runtime and
+/// ordinary harness paths should use [`compile_source`] or [`compile_direct`].
+#[doc(hidden)]
+pub fn compile_source_artifact(
+    source: &str,
+    locator: &str,
+) -> Result<serde_json::Value, HarnessError> {
+    compile_source_artifact_seeded(source, locator, &[]).map(|(_, artifact)| artifact)
+}
+
+/// Seeded artifact-only variant for compiler-owned generic instantiations.
+fn compile_source_artifact_seeded(
+    source: &str,
+    locator: &str,
+    seeds: &[mncs_model::HostGenericSeedRequest],
+) -> Result<(mncs_model::Program, serde_json::Value), HarnessError> {
     let envelope = mncs_syntax::SourceEnvelope::inline(
         mncs_syntax::SourceArtifactKind::Program,
         locator,
@@ -109,9 +134,7 @@ pub fn compile_direct_seeded(
         .ok_or_else(|| HarnessError::InvalidSource("no program elaborated".to_owned()))?;
     let artifact = direct_emitter::emit_vm_artifact(&compiler, &program)
         .map_err(HarnessError::CompilationFailed)?;
-    let bytes = serde_json::to_vec(&artifact).expect("direct artifact serializes");
-    let admitted = crate::admit::admit(&bytes)?;
-    Ok((program, admitted))
+    Ok((program, artifact))
 }
 
 /// Compile inline source with an explicit locator label.

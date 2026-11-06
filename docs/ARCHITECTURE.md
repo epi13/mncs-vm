@@ -308,6 +308,15 @@ instantiations, matches Language-normalized type-argument spellings against
 admitted candidate rows, and classifies route refusals. VM code retains its
 artifact indexes and maps the native decision back to the selected entry.
 
+Frozen-artifact compatibility is also selected by this policy artifact:
+`classify_artifact_schema`, `classify_vm_contract`,
+`classify_bound_dimensions`, and `classify_ssa_schema` own the supported
+contracts and dimensions. The host adapter preserves the existing refusal
+order and streams declarations in bounded, ordered packets. The embedded
+policy artifact has a restricted bootstrap admission path with no resource
+bounds; ordinary artifacts use the MNCS policy before structural indexes are
+built.
+
 ### 13. Observation and evidence
 
 The VM exposes machine-readable observations suitable for Test, Debug, Forge, Doctor, Fabric, and evidence workflows.

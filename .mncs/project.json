@@ -1,7 +1,7 @@
 {
   "schema_version": "mncs-family.repository-manifest/v0alpha1",
   "repository": "mncs-vm",
-  "revision": 4,
+  "revision": 5,
   "manifest_location": "in-repository",
   "authority": {
     "note": "VM owns the execution semantics of the MNCS-native virtual machine over frozen artifacts; it does not own source semantics, storage, placement, scheduling, testing, or model/provenance policy."
@@ -161,7 +161,7 @@
           "op": "any"
         },
         "required": true,
-        "scope": "The native request policy imports mncs.std.text_scan.v1::equals and its mncs.core.bytes.v1 foundation.",
+        "scope": "The shared native VM policy imports mncs.std.text_scan.v1::equals and its mncs.core.bytes.v1 foundation; it owns request/resource resolution, call selection, terminal classification, and frozen-artifact compatibility.",
         "evidence_refs": [
           "native/mncs/vm/request_policy.mncs",
           "src/harness.rs",

@@ -1,9 +1,9 @@
 mncs 0.18;
 
-// The VM's runtime policy boundary delegates request validation, resource
-// resolution, call-target selection, and terminal-outcome classification to
-// this bounded native reducer. Host code marshals fixed-width values and
-// projects typed results.
+// The VM's runtime policy boundary delegates artifact compatibility, request
+// validation, resource resolution, call-target selection, and terminal-outcome
+// classification to this bounded native reducer. Host code marshals values
+// and projects typed results.
 module mncs.vm.request_policy.v1;
 
 use mncs.std.text_scan.v1 as text_scan;
@@ -29,6 +29,11 @@ record CallResolutionState {
 }
 
 record CallResolutionDecision {
+    status: u64,
+    index: u64
+}
+
+record BoundDimensionDecision {
     status: u64,
     index: u64
 }
@@ -62,6 +67,74 @@ fn dimension_code(name: [byte; up_to 64], name_length: u64) -> (result: u64) {
         return 4;
     }
     return 5;
+}
+
+// Compatibility refusal order is kept by the Rust admission adapter: VM
+// artifact schema, identity verification, VM contract, bound declarations,
+// then selected-SSA schema. Status 0 accepts; status 1 refuses.
+fn classify_artifact_schema(schema: [byte; up_to 64], schema_length: u64) -> (result: u64) {
+    let expected: [byte; 18] = [109, 110, 99, 115, 46, 118, 109, 46, 97, 114, 116, 105, 102, 97, 99, 116, 47, 49];
+    if text_scan.equals(schema, schema_length, expected, 18) {
+        return 0;
+    }
+    return 1;
+}
+
+fn classify_vm_contract(contract: [byte; up_to 64], contract_length: u64) -> (result: u64) {
+    let expected: [byte; 11] = [109, 110, 99, 115, 46, 118, 109, 47, 48, 46, 49];
+    if text_scan.equals(contract, contract_length, expected, 11) {
+        return 0;
+    }
+    return 1;
+}
+
+fn classify_ssa_schema(schema: [byte; up_to 64], schema_length: u64) -> (result: u64) {
+    let schema_05: [byte; 3] = [48, 46, 53];
+    let schema_06: [byte; 3] = [48, 46, 54];
+    if text_scan.equals(schema, schema_length, schema_05, 3)
+        || text_scan.equals(schema, schema_length, schema_06, 3) {
+        return 0;
+    }
+    return 1;
+}
+
+// The host streams declarations in ordered, 16-item packets. This keeps
+// admission total for large manifests without adding a new artifact cap.
+// Status 0 accepts the packet, 1 identifies the first unsupported dimension,
+// and 2 means the transport supplied inconsistent lengths.
+fn bound_dimension_step(
+    state: BoundDimensionDecision,
+    dimension: [byte; up_to 64],
+    dimension_length: u64,
+    index: u64
+) -> (result: BoundDimensionDecision) {
+    if state.status != 0 {
+        return state;
+    }
+    if dimension_code(dimension, dimension_length) == 5 {
+        return BoundDimensionDecision { ..state, status: 1, index: index };
+    }
+    return state;
+}
+
+fn classify_bound_dimensions(
+    dimensions: [[byte; up_to 64]; up_to 16],
+    dimension_lengths: [u64; up_to 16],
+    dimension_count: u64
+) -> (result: BoundDimensionDecision) {
+    let initial: BoundDimensionDecision = BoundDimensionDecision {
+        status: 0,
+        index: 0
+    };
+    if dimension_count > 16
+        || dimension_count != dimensions.len
+        || dimension_count != dimension_lengths.len {
+        return BoundDimensionDecision { ..initial, status: 2 };
+    }
+    iterate i over dimensions carrying state: BoundDimensionDecision = initial {
+        next state = bound_dimension_step(state, dimensions[i], dimension_lengths[i], i);
+    }
+    return state;
 }
 
 fn merge_dimension(

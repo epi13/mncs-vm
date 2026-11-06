@@ -45,6 +45,7 @@ One Rust crate (`cargo test` is the fast loop, ~30 tests):
 - capability allow/deny with fail-closed dispatch and provider boundary;
 - structured outcomes plus `ExecutionRecord` evidence with digests;
 - differential agreement with the unmodified research interpreter over `tests/corpus/`;
+- shared MNCS policy for request/resource resolution, call selection, terminal classification, and artifact compatibility;
 - six upstream pressure records in `pressures/` (the compiler/language agent's intake).
 
 ```bash

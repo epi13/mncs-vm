@@ -186,7 +186,13 @@ fn canonical_request_propagates_and_overrides_only_tighten() {
     let spec = CallSpec::from_request(request(8_000_000, Some(7)), None).unwrap();
     assert_eq!(spec.envelope.limit_of("steps"), Some(8_000_000));
     assert_eq!(spec.envelope.limit_of("call_depth"), Some(7));
-    for dimension in mncs_vm::admit::ENFORCED_BOUNDS {
+    for dimension in [
+        "steps",
+        "call_depth",
+        "memory_cells",
+        "effects",
+        "iterations",
+    ] {
         assert!(spec.envelope.limit_of(dimension).is_some());
     }
     let extra = ResourceEnvelope {

@@ -325,6 +325,18 @@ normalized spellings when forming bounded policy input. Rust retains diagnostic
 presentation and artifact indexing, while route and refusal classification
 are decided by the shared MNCS policy artifact.
 
+Artifact admission compatibility uses the same policy artifact for the
+artifact schema, VM contract, supported bound dimensions, and accepted SSA
+schemas. Rust preserves the established refusal order, verifies content
+identity at the same boundary, and sends bound dimensions in ordered
+16-item packets. Packet streaming keeps large artifacts admissible without
+adding a total-bound count cap. Only the embedded policy artifact itself uses
+the narrow host bootstrap path needed to avoid recursively admitting the code
+that performs admission. Regenerate the policy artifact with
+`cargo run --offline --example generate_request_policy`; the artifact-only
+compiler path emits the policy before admission, then ordinary frozen-artifact
+admission verifies and executes it.
+
 Batch outcome counts and resource aggregates are reduced by the compiled
 MNCS module in `native/mncs/vm/batch_summary.mncs`. The Rust adapter transports
 at most 64 outcome/usage observations per native call, then projects the typed

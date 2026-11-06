@@ -25,7 +25,7 @@ static REQUEST_POLICY_ADMITTED: OnceLock<Result<Admitted, String>> = OnceLock::n
 
 pub(crate) fn native_policy_artifact() -> Result<&'static Admitted, String> {
     match REQUEST_POLICY_ADMITTED.get_or_init(|| {
-        crate::admit::admit(REQUEST_POLICY_ARTIFACT)
+        crate::admit::admit_policy_artifact(REQUEST_POLICY_ARTIFACT)
             .map_err(|error| format!("cannot admit native request policy: {error}"))
     }) {
         Ok(admitted) => Ok(admitted),
