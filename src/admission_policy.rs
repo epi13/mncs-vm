@@ -23,6 +23,7 @@ const POLICY_STEPS: u64 = 250_000;
 const POLICY_CALL_DEPTH: u64 = 8;
 const POLICY_MEMORY_CELLS: u64 = 100_000;
 const POLICY_ITERATIONS: u64 = 100_000;
+const ENVELOPE_MERGE_DIMENSIONS: usize = 5;
 
 struct PolicyExecution {
     value: Value,
@@ -158,6 +159,108 @@ fn record_u64(value: &Value, field: &str, function: &str) -> Result<u64, Admissi
             "{function} returned a non-integer {field}"
         ))),
     }
+}
+
+fn record_bool(value: &Value, field: &str, function: &str) -> Result<bool, AdmissionRefusal> {
+    let Value::Record { fields, .. } = value else {
+        return Err(policy_failure(format!(
+            "{function} returned a non-record result"
+        )));
+    };
+    let Some((_, value)) = fields.iter().find(|(name, _)| name == field) else {
+        return Err(policy_failure(format!("{function} omitted {field}")));
+    };
+    match value {
+        Value::Boolean(value) => Ok(*value),
+        _ => Err(policy_failure(format!(
+            "{function} returned a non-boolean {field}"
+        ))),
+    }
+}
+
+/// Resolve admitted artifact bounds and call overrides through the shared
+/// MNCS policy. `None` means the public host compatibility path must handle
+/// an input outside the native fixed-width envelope contract.
+pub(crate) fn merge_runtime_envelope(
+    bounds: &[BoundDecl],
+    overrides: &[ResourceLimit],
+) -> Result<Option<(ResourceEnvelope, ResourceUsage)>, AdmissionRefusal> {
+    if bounds.len() > ENVELOPE_MERGE_DIMENSIONS || overrides.len() > ENVELOPE_MERGE_DIMENSIONS {
+        return Ok(None);
+    }
+    let declared_dimensions = wire_sequence(
+        bounds
+            .iter()
+            .map(|bound| wire_bytes(&bound.dimension))
+            .collect(),
+    );
+    let declared_lengths = wire_sequence(
+        bounds
+            .iter()
+            .map(|bound| wire_u64(bound.dimension.len() as u64))
+            .collect(),
+    );
+    let declared_values = wire_sequence(bounds.iter().map(|bound| wire_u64(bound.limit)).collect());
+    let override_dimensions = wire_sequence(
+        overrides
+            .iter()
+            .map(|limit| wire_bytes(&limit.dimension))
+            .collect(),
+    );
+    let override_lengths = wire_sequence(
+        overrides
+            .iter()
+            .map(|limit| wire_u64(limit.dimension.len() as u64))
+            .collect(),
+    );
+    let override_values = wire_sequence(
+        overrides
+            .iter()
+            .map(|limit| wire_u64(limit.limit))
+            .collect(),
+    );
+    let function = "merge_runtime_envelope";
+    let execution = execute(
+        function,
+        vec![
+            wire_u64(bounds.len() as u64),
+            declared_dimensions,
+            declared_lengths,
+            declared_values,
+            wire_u64(overrides.len() as u64),
+            override_dimensions,
+            override_lengths,
+            override_values,
+        ],
+    )?;
+    let status = record_u64(&execution.value, "status", function)?;
+    if matches!(status, 1..=3) {
+        return Ok(None);
+    }
+    if status != 0 {
+        return Err(policy_failure(format!(
+            "{function} returned unknown status {status}"
+        )));
+    }
+
+    // The five MNCS dimensions are projected in the same stable lexical order
+    // as the long-standing ResourceEnvelope view.
+    let mut limits = Vec::new();
+    for (dimension, seen_field) in [
+        ("call_depth", "seen_call_depth"),
+        ("effects", "seen_effects"),
+        ("iterations", "seen_iterations"),
+        ("memory_cells", "seen_memory_cells"),
+        ("steps", "seen_steps"),
+    ] {
+        if record_bool(&execution.value, seen_field, function)? {
+            limits.push(ResourceLimit {
+                dimension: dimension.to_owned(),
+                limit: record_u64(&execution.value, dimension, function)?,
+            });
+        }
+    }
+    Ok(Some((ResourceEnvelope { limits }, execution.usage)))
 }
 
 fn classify_text(function: &str, value: &str) -> Result<u64, AdmissionRefusal> {
@@ -296,5 +399,90 @@ mod tests {
         assert!(result.usage.steps < POLICY_STEPS);
         assert!(result.usage.memory_cells < POLICY_MEMORY_CELLS);
         assert_eq!(result.usage.effects, 0);
+    }
+
+    #[test]
+    fn native_resource_merge_tightens_inputs_and_projects_stable_order() {
+        let bounds = [
+            BoundDecl {
+                dimension: "steps".into(),
+                limit: u64::MAX,
+            },
+            BoundDecl {
+                dimension: "memory_cells".into(),
+                limit: 40,
+            },
+        ];
+        let overrides = [
+            ResourceLimit {
+                dimension: "steps".into(),
+                limit: u64::MAX - 1,
+            },
+            ResourceLimit {
+                dimension: "effects".into(),
+                limit: 7,
+            },
+        ];
+        let (envelope, usage) = merge_runtime_envelope(&bounds, &overrides)
+            .unwrap()
+            .expect("known, unique input dimensions use native merge");
+        assert_eq!(
+            envelope.limits,
+            vec![
+                ResourceLimit {
+                    dimension: "effects".into(),
+                    limit: 7,
+                },
+                ResourceLimit {
+                    dimension: "memory_cells".into(),
+                    limit: 40,
+                },
+                ResourceLimit {
+                    dimension: "steps".into(),
+                    limit: u64::MAX - 1,
+                },
+            ]
+        );
+        assert!(usage.steps < POLICY_STEPS);
+        assert!(usage.max_call_depth <= POLICY_CALL_DEPTH);
+        assert!(usage.max_memory_cells <= POLICY_MEMORY_CELLS);
+        assert_eq!(usage.effects, 0);
+    }
+
+    #[test]
+    fn native_resource_merge_declines_duplicate_or_unknown_compatibility_inputs() {
+        let duplicate = [
+            BoundDecl {
+                dimension: "steps".into(),
+                limit: 40,
+            },
+            BoundDecl {
+                dimension: "steps".into(),
+                limit: 20,
+            },
+        ];
+        assert!(merge_runtime_envelope(&duplicate, &[]).unwrap().is_none());
+        let duplicate_overrides = [
+            ResourceLimit {
+                dimension: "steps".into(),
+                limit: 40,
+            },
+            ResourceLimit {
+                dimension: "steps".into(),
+                limit: 20,
+            },
+        ];
+        assert!(merge_runtime_envelope(&[], &duplicate_overrides)
+            .unwrap()
+            .is_none());
+        assert!(merge_runtime_envelope(
+            &[],
+            &[ResourceLimit {
+                dimension: "unbounded-custom".into(),
+                limit: 10,
+            }],
+        )
+        .unwrap()
+        .is_none());
     }
 }

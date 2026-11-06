@@ -55,10 +55,10 @@ impl ResourceEnvelope {
             .map(|entry| entry.limit)
     }
 
-    /// Merge artifact-declared bounds with caller-supplied overrides.
-    /// The tighter limit wins per dimension; unknown dimensions are
-    /// kept so admission (which already refused unenforceable ones)
-    /// and execution agree on the envelope.
+    /// Preserve the historical merge for direct callers outside the bounded
+    /// native envelope ABI. Canonical session execution delegates known,
+    /// unique dimensions to the shared MNCS policy; this compatibility helper
+    /// retains unknown dimensions and duplicate-input behavior.
     pub fn merged(declared: &[ResourceLimit], overrides: &[ResourceLimit]) -> Self {
         let mut limits: Vec<ResourceLimit> = declared.to_vec();
         for extra in overrides {

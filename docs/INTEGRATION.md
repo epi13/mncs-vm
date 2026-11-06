@@ -316,6 +316,12 @@ also tighten limits. Duplicate/unknown override dimensions are refused.
 Host grants and non-default execution policies require explicit VM capability
 bindings and are refused by this batch adapter. No authority is inferred.
 
+At session execution, the shared policy artifact also merges the admitted
+artifact bounds with the bound call envelope. Runtime accounting, debug
+execution, and the resulting execution record use the same resolved limits.
+Direct `CallSpec` values that exceed the native five-dimension ABI or contain
+unknown/duplicate dimensions retain the public host compatibility behavior.
+
 Concrete-versus-generic routing and exact generic-instantiation selection run
 in `native/mncs/vm/request_policy.mncs::resolve_call_policy`. The Rust adapter
 marshals the VM's concrete candidate and the admitted, name-indexed generic

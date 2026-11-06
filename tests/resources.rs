@@ -487,4 +487,29 @@ fn declared_bounds_still_tighten_request_and_are_recorded() {
         .resource_limits
         .iter()
         .any(|l| l.dimension == "steps" && l.limit == 1));
+    assert_eq!(
+        record.resource_limits,
+        vec![
+            ResourceLimit {
+                dimension: "call_depth".into(),
+                limit: 1024,
+            },
+            ResourceLimit {
+                dimension: "effects".into(),
+                limit: 1024,
+            },
+            ResourceLimit {
+                dimension: "iterations".into(),
+                limit: 1_000_000,
+            },
+            ResourceLimit {
+                dimension: "memory_cells".into(),
+                limit: 10_000_000,
+            },
+            ResourceLimit {
+                dimension: "steps".into(),
+                limit: 1,
+            },
+        ]
+    );
 }

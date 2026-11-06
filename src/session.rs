@@ -456,6 +456,20 @@ pub struct Session<'a> {
     runtime_id: String,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum EnvelopeResolution {
+    Native(ResourceEnvelope),
+    HostCompatibility(ResourceEnvelope),
+}
+
+impl EnvelopeResolution {
+    fn envelope(&self) -> &ResourceEnvelope {
+        match self {
+            Self::Native(envelope) | Self::HostCompatibility(envelope) => envelope,
+        }
+    }
+}
+
 impl<'a> Session<'a> {
     pub fn open(admitted: &'a Admitted) -> Self {
         Self {
@@ -466,6 +480,29 @@ impl<'a> Session<'a> {
 
     pub fn artifact_id(&self) -> &str {
         self.admitted.artifact_id()
+    }
+
+    fn resolve_resource_envelope(&self, overrides: &ResourceEnvelope) -> EnvelopeResolution {
+        let bounds = &self.admitted.artifact.requirements.bounds;
+        match crate::admission_policy::merge_runtime_envelope(bounds, &overrides.limits) {
+            Ok(Some((envelope, _usage))) => EnvelopeResolution::Native(envelope),
+            Ok(None) | Err(_) => {
+                // Public CallSpec callers may bypass request admission with
+                // duplicate, unknown, oversized, or otherwise unrepresentable
+                // dimension sets. Preserve that historical direct-call API.
+                let declared = bounds
+                    .iter()
+                    .map(|bound| ResourceLimit {
+                        dimension: bound.dimension.clone(),
+                        limit: bound.limit,
+                    })
+                    .collect::<Vec<_>>();
+                EnvelopeResolution::HostCompatibility(ResourceEnvelope::merged(
+                    &declared,
+                    &overrides.limits,
+                ))
+            }
+        }
     }
 
     /// Start one debugged call. Runs to the first bound stop,
@@ -480,13 +517,15 @@ impl<'a> Session<'a> {
         config: crate::debug::DebugConfig,
     ) -> crate::debug::DebugStart<'e> {
         use crate::debug::{DebugStart, FinishRecord, LiveExecution};
+        let resolved_envelope = self.resolve_resource_envelope(&spec.envelope);
+        let envelope = resolved_envelope.envelope().clone();
         let resolved = resolve_call(self.admitted, &spec.target, &spec.type_arguments);
         let invalid = |session: &Self, reason: String| {
             let outcome = Outcome::InvalidRequest { reason };
             let stream = crate::debug::empty_stream();
             let mut record = session.record(
                 caps,
-                &spec,
+                &envelope.limits,
                 String::new(),
                 String::new(),
                 Vec::new(),
@@ -508,18 +547,6 @@ impl<'a> Session<'a> {
         };
         let callable_function = resolved.function;
         let callable_name = resolved.name;
-        let declared: Vec<ResourceLimit> = self
-            .admitted
-            .artifact
-            .requirements
-            .bounds
-            .iter()
-            .map(|bound| ResourceLimit {
-                dimension: bound.dimension.clone(),
-                limit: bound.limit,
-            })
-            .collect();
-        let envelope = ResourceEnvelope::merged(&declared, &spec.envelope.limits);
         let arguments: Vec<Value> = spec.arguments.iter().map(from_wire).collect();
         let engine = match Engine::new(self.admitted, envelope.clone(), caps) {
             Some(engine) => engine,
@@ -567,6 +594,8 @@ impl<'a> Session<'a> {
     /// same artifact, callable, arguments, capabilities, providers,
     /// and envelope produce the same outcome and evidence.
     pub fn call(&mut self, caps: &CapabilityEnv, spec: CallSpec) -> (Outcome, ExecutionRecord) {
+        let resolved_envelope = self.resolve_resource_envelope(&spec.envelope);
+        let envelope = resolved_envelope.envelope().clone();
         let resolved = resolve_call(self.admitted, &spec.target, &spec.type_arguments);
         let resolved = match resolved {
             Ok(resolved) => resolved,
@@ -574,7 +603,7 @@ impl<'a> Session<'a> {
                 let outcome = Outcome::InvalidRequest { reason };
                 let record = self.record(
                     caps,
-                    &spec,
+                    &envelope.limits,
                     String::new(),
                     String::new(),
                     Vec::new(),
@@ -588,20 +617,8 @@ impl<'a> Session<'a> {
         };
         let callable_function = resolved.function;
         let callable_name = resolved.name;
-        let declared: Vec<ResourceLimit> = self
-            .admitted
-            .artifact
-            .requirements
-            .bounds
-            .iter()
-            .map(|bound| ResourceLimit {
-                dimension: bound.dimension.clone(),
-                limit: bound.limit,
-            })
-            .collect();
-        let envelope = ResourceEnvelope::merged(&declared, &spec.envelope.limits);
         let arguments: Vec<Value> = spec.arguments.iter().map(from_wire).collect();
-        let engine = match Engine::new(self.admitted, envelope, caps) {
+        let engine = match Engine::new(self.admitted, envelope.clone(), caps) {
             Some(engine) => engine,
             None => {
                 let outcome = Outcome::InvalidRequest {
@@ -609,7 +626,7 @@ impl<'a> Session<'a> {
                 };
                 let record = self.record(
                     caps,
-                    &spec,
+                    &envelope.limits,
                     callable_function,
                     callable_name,
                     arguments,
@@ -634,7 +651,7 @@ impl<'a> Session<'a> {
         );
         let record = self.record(
             caps,
-            &spec,
+            &envelope.limits,
             callable_function,
             callable_name,
             arguments,
@@ -650,7 +667,7 @@ impl<'a> Session<'a> {
     fn record(
         &self,
         caps: &CapabilityEnv,
-        spec: &CallSpec,
+        resource_limits: &[ResourceLimit],
         callable_function: String,
         callable_name: String,
         arguments: Vec<Value>,
@@ -670,21 +687,7 @@ impl<'a> Session<'a> {
             callable_name,
             arguments,
             admitted_capabilities: caps.admitted_capabilities(),
-            resource_limits: ResourceEnvelope::merged(
-                &self
-                    .admitted
-                    .artifact
-                    .requirements
-                    .bounds
-                    .iter()
-                    .map(|b| ResourceLimit {
-                        dimension: b.dimension.clone(),
-                        limit: b.limit,
-                    })
-                    .collect::<Vec<_>>(),
-                &spec.envelope.limits,
-            )
-            .limits,
+            resource_limits: resource_limits.to_vec(),
             outcome,
             returned,
             usage,
@@ -693,6 +696,68 @@ impl<'a> Session<'a> {
             effects_digest,
             observation: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod runtime_envelope_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_session_envelopes_select_the_native_policy() {
+        let admitted = native_policy_artifact().unwrap();
+        let session = Session::open(admitted);
+        let resolution = session.resolve_resource_envelope(&ResourceEnvelope {
+            limits: vec![
+                ResourceLimit {
+                    dimension: "steps".into(),
+                    limit: 40,
+                },
+                ResourceLimit {
+                    dimension: "effects".into(),
+                    limit: 2,
+                },
+            ],
+        });
+        let EnvelopeResolution::Native(envelope) = resolution else {
+            panic!("bounded known dimensions must use the MNCS policy");
+        };
+        assert_eq!(
+            envelope.limits,
+            vec![
+                ResourceLimit {
+                    dimension: "effects".into(),
+                    limit: 2,
+                },
+                ResourceLimit {
+                    dimension: "steps".into(),
+                    limit: 40,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn out_of_contract_direct_envelopes_keep_the_host_compatibility_path() {
+        let admitted = native_policy_artifact().unwrap();
+        let session = Session::open(admitted);
+        let overrides = ResourceEnvelope {
+            limits: vec![
+                ResourceLimit {
+                    dimension: "custom_unbounded_dimension".into(),
+                    limit: 9,
+                },
+                ResourceLimit {
+                    dimension: "steps".into(),
+                    limit: 40,
+                },
+            ],
+        };
+        let resolution = session.resolve_resource_envelope(&overrides);
+        let EnvelopeResolution::HostCompatibility(envelope) = resolution else {
+            panic!("unknown direct dimensions must retain compatibility behavior");
+        };
+        assert_eq!(envelope, ResourceEnvelope::merged(&[], &overrides.limits));
     }
 }
 

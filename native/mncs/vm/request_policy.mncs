@@ -38,6 +38,25 @@ record BoundDimensionDecision {
     index: u64
 }
 
+record EnvelopeMergeState {
+    status: u64,
+    steps: u64,
+    call_depth: u64,
+    memory_cells: u64,
+    effects: u64,
+    iterations: u64,
+    seen_steps: bool,
+    seen_call_depth: bool,
+    seen_memory_cells: bool,
+    seen_effects: bool,
+    seen_iterations: bool,
+    seen_override_steps: bool,
+    seen_override_call_depth: bool,
+    seen_override_memory_cells: bool,
+    seen_override_effects: bool,
+    seen_override_iterations: bool
+}
+
 fn tighter(current: u64, requested: u64) -> (result: u64) {
     if current <= requested {
         return current;
@@ -198,6 +217,179 @@ fn merge_dimension(
         };
     }
     return PolicyState { ..current, status: 3 };
+}
+
+fn merge_declared_envelope_dimension(
+    current: EnvelopeMergeState,
+    name: [byte; up_to 64],
+    name_length: u64,
+    requested: u64
+) -> (result: EnvelopeMergeState) {
+    if current.status != 0 {
+        return current;
+    }
+    let code: u64 = dimension_code(name, name_length);
+    if code == 0 {
+        if current.seen_steps {
+            return EnvelopeMergeState { ..current, status: 3 };
+        }
+        return EnvelopeMergeState { ..current, steps: requested, seen_steps: true };
+    }
+    if code == 1 {
+        if current.seen_call_depth {
+            return EnvelopeMergeState { ..current, status: 3 };
+        }
+        return EnvelopeMergeState { ..current, call_depth: requested, seen_call_depth: true };
+    }
+    if code == 2 {
+        if current.seen_memory_cells {
+            return EnvelopeMergeState { ..current, status: 3 };
+        }
+        return EnvelopeMergeState { ..current, memory_cells: requested, seen_memory_cells: true };
+    }
+    if code == 3 {
+        if current.seen_effects {
+            return EnvelopeMergeState { ..current, status: 3 };
+        }
+        return EnvelopeMergeState { ..current, effects: requested, seen_effects: true };
+    }
+    if code == 4 {
+        if current.seen_iterations {
+            return EnvelopeMergeState { ..current, status: 3 };
+        }
+        return EnvelopeMergeState { ..current, iterations: requested, seen_iterations: true };
+    }
+    return EnvelopeMergeState { ..current, status: 1 };
+}
+
+fn merge_override_envelope_dimension(
+    current: EnvelopeMergeState,
+    name: [byte; up_to 64],
+    name_length: u64,
+    requested: u64
+) -> (result: EnvelopeMergeState) {
+    if current.status != 0 {
+        return current;
+    }
+    let code: u64 = dimension_code(name, name_length);
+    if code == 0 {
+        if current.seen_override_steps {
+            return EnvelopeMergeState { ..current, status: 3 };
+        }
+        return EnvelopeMergeState {
+            ..current,
+            steps: select(current.seen_steps, tighter(current.steps, requested), requested),
+            seen_steps: true,
+            seen_override_steps: true
+        };
+    }
+    if code == 1 {
+        if current.seen_override_call_depth {
+            return EnvelopeMergeState { ..current, status: 3 };
+        }
+        return EnvelopeMergeState {
+            ..current,
+            call_depth: select(current.seen_call_depth, tighter(current.call_depth, requested), requested),
+            seen_call_depth: true,
+            seen_override_call_depth: true
+        };
+    }
+    if code == 2 {
+        if current.seen_override_memory_cells {
+            return EnvelopeMergeState { ..current, status: 3 };
+        }
+        return EnvelopeMergeState {
+            ..current,
+            memory_cells: select(current.seen_memory_cells, tighter(current.memory_cells, requested), requested),
+            seen_memory_cells: true,
+            seen_override_memory_cells: true
+        };
+    }
+    if code == 3 {
+        if current.seen_override_effects {
+            return EnvelopeMergeState { ..current, status: 3 };
+        }
+        return EnvelopeMergeState {
+            ..current,
+            effects: select(current.seen_effects, tighter(current.effects, requested), requested),
+            seen_effects: true,
+            seen_override_effects: true
+        };
+    }
+    if code == 4 {
+        if current.seen_override_iterations {
+            return EnvelopeMergeState { ..current, status: 3 };
+        }
+        return EnvelopeMergeState {
+            ..current,
+            iterations: select(current.seen_iterations, tighter(current.iterations, requested), requested),
+            seen_iterations: true,
+            seen_override_iterations: true
+        };
+    }
+    return EnvelopeMergeState { ..current, status: 1 };
+}
+
+// Artifact declarations and caller overrides form one runtime envelope.
+// Each input group is independently unique; the same dimension may occur
+// once in both groups, in which case the tighter limit wins. Status 0
+// accepts, 1 reports an unsupported dimension, 2 an inconsistent packet,
+// and 3 a duplicate within one input group.
+fn merge_runtime_envelope(
+    declared_count: u64,
+    declared_dimensions: [[byte; up_to 64]; up_to 5],
+    declared_lengths: [u64; up_to 5],
+    declared_values: [u64; up_to 5],
+    override_count: u64,
+    override_dimensions: [[byte; up_to 64]; up_to 5],
+    override_lengths: [u64; up_to 5],
+    override_values: [u64; up_to 5]
+) -> (result: EnvelopeMergeState) {
+    let initial: EnvelopeMergeState = EnvelopeMergeState {
+        status: 0,
+        steps: 0,
+        call_depth: 0,
+        memory_cells: 0,
+        effects: 0,
+        iterations: 0,
+        seen_steps: false,
+        seen_call_depth: false,
+        seen_memory_cells: false,
+        seen_effects: false,
+        seen_iterations: false,
+        seen_override_steps: false,
+        seen_override_call_depth: false,
+        seen_override_memory_cells: false,
+        seen_override_effects: false,
+        seen_override_iterations: false
+    };
+    if declared_count > 5
+        || declared_count != declared_dimensions.len
+        || declared_count != declared_lengths.len
+        || declared_count != declared_values.len
+        || override_count > 5
+        || override_count != override_dimensions.len
+        || override_count != override_lengths.len
+        || override_count != override_values.len {
+        return EnvelopeMergeState { ..initial, status: 2 };
+    }
+    iterate i over declared_dimensions carrying declared_state: EnvelopeMergeState = initial {
+        next declared_state = merge_declared_envelope_dimension(
+            declared_state,
+            declared_dimensions[i],
+            declared_lengths[i],
+            declared_values[i]
+        );
+    }
+    iterate i over override_dimensions carrying merged_state: EnvelopeMergeState = declared_state {
+        next merged_state = merge_override_envelope_dimension(
+            merged_state,
+            override_dimensions[i],
+            override_lengths[i],
+            override_values[i]
+        );
+    }
+    return merged_state;
 }
 
 fn resolve_request_policy(

@@ -1,0 +1,82 @@
+{
+  "schema_version": "mncs.vm.native-runtime-envelope-merge/1",
+  "date": "2026-11-06",
+  "campaign_id": "cmp_luna_native_ecosystem_20261106_0856z",
+  "environment_session_id": "ses_7f4d402786c89a6b",
+  "work_intent_id": "int_81d6668f3bc92c95",
+  "repository": "mncs-vm",
+  "implementation": {
+    "tree_base_commit": "45642661c024ecd8c31a3b8155abb2dffd8697fe",
+    "responsibility": "Merge artifact resource declarations with request overrides in MNCS and use one resolved envelope for VM calls, debug calls, and execution evidence.",
+    "native_source": "native/mncs/vm/request_policy.mncs",
+    "native_entry_point": "merge_runtime_envelope",
+    "native_source_sha256": "6cce824d95156f8a10ccf300237cfc744ac48c4426aa28bf0e869ad296e6a95a",
+    "compiled_artifact": "native/mncs/vm/request_policy.artifact.json",
+    "artifact_id": "sha256:b71a42608abe95573a63b8ed11886d0942077095dd5584ced2c5af2007b0c553",
+    "artifact_sha256": "f1480eee0afc7a45962966a073981fe4dfa9a213d23efd642cc764dcd21c023e",
+    "production_consumers": [
+      "Session::call",
+      "Session::start_debug",
+      "ExecutionRecord resource limits"
+    ],
+    "retired_host_responsibility": "ResourceEnvelope::merged is no longer used to resolve normal bounded Session call or debug execution envelopes; it remains as a compatibility path for direct-call inputs outside the native fixed-width known-dimension contract."
+  },
+  "behavioral_contract": {
+    "dimensions": [
+      "steps",
+      "call_depth",
+      "memory_cells",
+      "effects",
+      "iterations"
+    ],
+    "declared_and_override_groups": "Each group accepts a known dimension once; a repeated dimension across groups is merged by the tighter limit.",
+    "independent_expectations": "Native policy unit tests cover tighter merge, lexical projection, maximum-width values, duplicate declaration/override rejection to compatibility, and unknown dimensions to compatibility. Resource integration asserts the exact effective envelope in the execution record.",
+    "provider_execution": {
+      "provider": "mncs-vm:vm-call",
+      "operation": "mncs.vm.request_policy.v1::merge_runtime_envelope",
+      "outcome": "completed",
+      "declared_steps": 80,
+      "override_steps": 10,
+      "override_effects": 3,
+      "returned_status": 0,
+      "returned_steps": 10,
+      "returned_effects": 3
+    },
+    "compatibility": "Duplicate, unknown, over-capacity, or unrepresentable direct CallSpec inputs retain host compatibility behavior."
+  },
+  "verification": {
+    "environment_capabilities": [
+      "mncs-vm:vm-tests",
+      "mncs-vm:vm-build",
+      "mncs-vm:vm-call"
+    ],
+    "focused_suite": {
+      "command": "cargo test --offline --locked --lib --test resources --test debug",
+      "lib": {
+        "passed": 22,
+        "failed": 0
+      },
+      "resources": {
+        "passed": 11,
+        "failed": 0
+      },
+      "debug": {
+        "passed": 16,
+        "failed": 0
+      }
+    },
+    "source_artifact_parity": "passed",
+    "format_and_diff_checks": "cargo fmt --all -- --check and git diff --check passed.",
+    "provider_build": {
+      "command": "python3 tools/provider.py build",
+      "status": "built-and-verified-locally",
+      "mismatch_count": 0,
+      "receipt_identity": "sha256:6c37e52edbc69789ae56589610f93185ca6eb952a0ccfb0e24b5ff5b4c8bde5b",
+      "runtime_build_identity": "5b54fc06b329cb11b8ef253edad14086cddd2661d3e5e58c38398517169e00d9",
+      "executable_sha256": "a3d70d2c5742e942f21be4add8c9278f0c98c944df77736af7ccc094a84a1903",
+      "source_input_count": 98,
+      "source_inputs_identity": "5e86053b420be1eb1c77c85306bd47bd59ddc6ddf73cdd45dbf4b6095b36627e",
+      "assurance": "Local build observation; not independent attestation."
+    }
+  }
+}
