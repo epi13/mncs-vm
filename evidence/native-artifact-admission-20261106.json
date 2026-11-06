@@ -1,0 +1,110 @@
+{
+  "schema_version": "mncs.vm.native-artifact-admission/1",
+  "date": "2026-11-06",
+  "campaign_id": "cmp_luna_native_ecosystem_20261106_0856z",
+  "environment_id": "renv_5aa2a78532698624",
+  "environment_session_id": "ses_124282c4a2364faa",
+  "work_intent_id": "int_81d6668f3bc92c95",
+  "repository": "mncs-vm",
+  "authority": {
+    "claim_id": "claim:mncs-vm:worktree:b42de9c1f804",
+    "claim_identity": "clm_16c7a830ab64247f",
+    "checkout": ".worktrees/luna-max-vm-native-admission-policy-20261106",
+    "branch": "campaign/luna-max-vm-native-admission-policy-20261106",
+    "base_revision": "4d835446605fb63e64abca5b973e0ec840d52998"
+  },
+  "implementation": {
+    "commit": "d4796fa",
+    "responsibility": "Classify frozen-artifact schema, VM contract, bound dimensions, and selected-SSA schema through the embedded MNCS request policy.",
+    "native_source": "native/mncs/vm/request_policy.mncs",
+    "source_sha256": "37cb8e7b94477008e1cfe2f9697d1436b8fc242092288ddc34a85073fc73ee41",
+    "compiled_artifact": "native/mncs/vm/request_policy.artifact.json",
+    "artifact_id": "sha256:a07f091337488ca010f9b0ceb2f0c72d111daa707468fb0b923fb1e1468ee851",
+    "artifact_sha256": "d90a4cae5750dcfcb29b541944821816f690435418079afcc0c422d0a22ecca9",
+    "artifact_bytes": 2057756,
+    "production_consumer": "mncs-vm::admit_artifact, through src/admission_policy.rs and the ordinary CLI/VM artifact admission path",
+    "retired_host_responsibility": "Removed the Rust supported-bound list and compatibility decision tree. Rust retains artifact decoding, content-identity verification, ordered policy transport, native result mapping, and structural SSA index construction."
+  },
+  "behavioral_contract": {
+    "refusal_order": [
+      "artifact schema",
+      "content identity",
+      "VM contract",
+      "ordered bound dimensions",
+      "selected-SSA schema"
+    ],
+    "independent_expectations": [
+      "schema refusal precedes identity-related decisions",
+      "VM-contract refusal precedes unsupported bound checks",
+      "the first unsupported bound after more than one packet is reported",
+      "long dimensions cannot become accepted through transport truncation and retain the original diagnostic",
+      "both supported SSA schemas remain admissible and an unsupported schema is refused"
+    ],
+    "supported_bound_dimensions": [
+      "steps",
+      "call_depth",
+      "memory_cells",
+      "effects",
+      "iterations"
+    ],
+    "bound_packet_items": 16,
+    "bound_streaming": "Packets preserve declaration order and do not impose a total-bound count cap.",
+    "bootstrap_boundary": "Only the embedded policy artifact uses a narrow non-recursive host bootstrap path; guest artifacts always use the MNCS compatibility policy."
+  },
+  "resource_observation": {
+    "policy_envelope": {
+      "max_steps": 250000,
+      "max_call_depth": 8,
+      "max_memory_cells": 100000,
+      "max_effects": 0,
+      "max_iterations": 100000
+    },
+    "workload_check": "A 16-dimension supported-bound packet completes below the step and memory ceilings with zero effects. Exact usage counters are not emitted by the test."
+  },
+  "verification": {
+    "full_suite": {
+      "command": "cargo test --offline",
+      "execution_context": "canonical workspace Cargo cache, scoped VM worktree",
+      "status": "passed",
+      "passed": 109,
+      "failed": 0,
+      "ignored": 0,
+      "doc_tests": 0
+    },
+    "source_artifact_identity": {
+      "test": "embedded_policy_artifact_matches_native_source",
+      "status": "passed",
+      "result": "compiled MNCS source serializes byte-for-byte to the checked-in frozen artifact"
+    },
+    "production_cli": {
+      "command": "cargo run --offline --bin mncs-vm -- compile tests/corpus/arith.mncs, then admit the generated artifact",
+      "status": "passed",
+      "artifact_id": "sha256:50a4cd65f7b3fee44418d397d70d6598e622991e8664905d4907e0148b7d8d99",
+      "artifact_bytes": 70298,
+      "admission_status": "admitted"
+    },
+    "format_and_diff_checks": "cargo fmt --all -- --check and git diff --check passed.",
+    "toolchain_revisions": {
+      "mncs-vm_base": "4d835446605fb63e64abca5b973e0ec840d52998",
+      "mncs-compiler": "f372a6e069805d8de6753da4b9de332749184785",
+      "mncs-language": "f8212ed8b7478196b5293a84152154be5e0bea3f",
+      "mncs-stdlib": "6059627d9ac3b0fd7b8fb1a7e2b581e4497812ab"
+    },
+    "environment_observations": {
+      "session_readiness": "degraded with no blocking, required-unavailable, or required-unknown capabilities; one optional capability remains unknown",
+      "project_test_binding": {
+        "binding_id": "cap_1342f05d15694d00",
+        "capability": "mncs-vm:test/vm-tests",
+        "checkout": "/home/epi13/Documents/Projects/mncs-vm",
+        "head": "527d3e2c793bbc6d737b7af583247bf0a597c63b",
+        "state": "stale base-main binding rather than the scoped worktree; not invoked"
+      },
+      "control_sandbox_offline": "Control terminal cargo test --offline failed before compilation because that sandbox lacked the toml package in its crates.io index. The same offline suite passed in the canonical workspace cache; no network access was used."
+    }
+  },
+  "delivery": {
+    "feature_branch": "campaign/luna-max-vm-native-admission-policy-20261106",
+    "feature_commit": "d4796fa45b5c283d77fc217aa76102205536c2d4",
+    "publication_method": "authorized fast-forward integration to main"
+  }
+}
